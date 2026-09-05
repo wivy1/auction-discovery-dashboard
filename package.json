@@ -1,0 +1,51 @@
+{
+  "name": "auction-discovery",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "setup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1",
+    "dev": "scripts\\dev.cmd",
+    "build": "vinext build",
+    "start": "vinext start",
+    "test": "node --import ./scripts/node-runtime-preload.mjs scripts/test.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint app db lib scripts worker build --ignore-pattern dist --ignore-pattern .wrangler",
+    "browser:install": "node node_modules/playwright/cli.js install chromium"
+  },
+  "dependencies": {
+    "drizzle-orm": "0.45.2",
+    "next": "16.2.6",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "linkedom": "0.18.13",
+    "playwright": "1.63.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.37.1",
+    "@cloudflare/workers-types": "4.20260515.1",
+    "@tailwindcss/postcss": "4.2.1",
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.2",
+    "@vitejs/plugin-rsc": "0.5.26",
+    "drizzle-kit": "0.31.10",
+    "eslint": "9.39.4",
+    "eslint-config-next": "16.2.6",
+    "react-server-dom-webpack": "19.2.6",
+    "tailwindcss": "4.2.1",
+    "tsx": "4.23.0",
+    "typescript": "5.9.3",
+    "vinext": "0.0.50",
+    "vite": "8.0.13",
+    "wrangler": "4.92.0"
+  },
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "description": "A local workspace for discovering and reviewing auction equipment with your own source adapters.",
+  "license": "MIT",
+  "author": "wivy1"
+}
