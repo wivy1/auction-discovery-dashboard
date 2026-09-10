@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "modelId": "REPLACE_WITH_YOUR_MODEL_ID",
+  "modelVersion": "REPLACE_WITH_YOUR_MODEL_VERSION",
+  "featureVersion": "REPLACE_WITH_YOUR_FEATURE_VERSION",
+  "artifactPath": "./models.local/REPLACE_WITH_YOUR_ARTIFACT_FILENAME",
+  "artifactSha256": "REPLACE_WITH_ACTUAL_ARTIFACT_SHA256",
+  "trainingSnapshotSha256": null,
+  "createdAt": "2026-01-01T00:00:00.000Z"
+}

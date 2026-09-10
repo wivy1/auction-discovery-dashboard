@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "adapterModule": "./preference-adapter.local.ts",
+  "trainingDataPath": "./preferences.local/training-data.json",
+  "modelManifestPath": "./preferences.local/model-manifest.json",
+  "profileOutputPath": "./preferences.local/profile.json"
+}

@@ -11,6 +11,7 @@
     "build": "vinext build",
     "start": "vinext start",
     "test": "node --import ./scripts/node-runtime-preload.mjs scripts/test.mjs",
+    "preference": "node --import ./scripts/node-runtime-preload.mjs --import tsx scripts/preference.mts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint app db lib scripts worker build --ignore-pattern dist --ignore-pattern .wrangler",
     "browser:install": "node node_modules/playwright/cli.js install chromium"

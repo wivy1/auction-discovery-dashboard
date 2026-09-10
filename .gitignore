@@ -50,6 +50,10 @@ __pycache__/
 
 # Local adapters, receipts, development tools and operator state
 /source-adapters.local.ts
+/preference-adapter.local.ts
+/preference.config.local.json
+/preferences.local/
+/models.local/
 /.runtime/
 /.agents/
 /.codex/

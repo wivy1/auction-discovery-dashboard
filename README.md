@@ -113,13 +113,19 @@ Ordinary discovery and review work without AI. Your Interested/Not interested vo
 
 Optional text enrichment can use your own installed Ollama models. Configure all four `AI_TEXT_PROVIDER`, `AI_TEXT_MODEL`, `AI_EMBEDDING_PROVIDER`, and `AI_EMBEDDING_MODEL` values in `.env.local`; use `ollama` for the providers and the exact installed model IDs for the models. The bundled embedding dimension contracts support the `qwen3-embedding` 0.6B, 4B, and 8B families; other embedding models require an explicit compatible dimension contract in the local integration. `OLLAMA_BASE_URL` defaults to localhost. Setup does not download AI models. Enrichment is separate from source acquisition and does not replace original source facts.
 
-Preference scoring requires a compatible model and a local integration supplied by the user. This release has no general training or model-activation workflow. The configured profile and numeric scores in the screenshots are not the behavior of a fresh checkout.
+### Preference training and model templates
+
+The repository includes a [preference integration starter](docs/preference-training.md) with typed training, scoring, profile-generation, and activation hooks; local configuration and model-manifest templates; and commands that validate inputs and call your implementation. **No trained model or working trainer/scorer is included. Automatic learning and dashboard model activation are not turnkey features.** The `v0.1.0` release ZIP predates this starter; use the current `main` checkout for these files.
+
+Run `pnpm preference init` after setup to create the ignored local files. Supply your own reviewed-listing snapshot and a compatible downloaded or locally trained model, then implement `preference-adapter.local.ts`. Use `pnpm preference check` to validate file contracts; `train`, `profile`, and `activate` call the hooks you implement. The example hooks deliberately stop until implemented, and setup downloads no models.
+
+You must connect the scorer and generated profile to the application before the dashboard can show learned scores and interest signals. The guide identifies those connection points and the validation needed before enabling automatic retraining. Until that integration is complete, listings remain **Unrated**. The configured workflow in the screenshots is not supplied by the templates.
 
 ## Scheduling and local data
 
 Use **Settings → Scheduled discovery** to opt into a Windows schedule. Saving that setting creates or updates tasks scoped to this checkout. The computer must be available at the scheduled time; the dashboard reports completed, paused, blocked, and failed work distinctly.
 
-Configuration, source adapters, database state, cached images, votes, logs, and runtime receipts are local and ignored by Git. Preserve `.env.local`, `source-adapters.local.ts`, and `.wrangler` when updating. Stop the application before copying its data folder for a backup. Do not copy another installation's runtime state into a running checkout.
+Configuration, source adapters, database state, cached images, votes, logs, and runtime receipts are local and ignored by Git. Preserve `.env.local`, `source-adapters.local.ts`, and `.wrangler` when updating, along with `preference-adapter.local.ts`, `preference.config.local.json`, `preferences.local/`, and `models.local/` if you use the preference starter. Stop the application before copying its data folder for a backup. Do not copy another installation's runtime state into a running checkout.
 
 ## Development
 

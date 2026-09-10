@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "examples": [
+    {
+      "listingId": "example.invalid:synthetic-interested",
+      "title": "Synthetic format example: workshop tool",
+      "description": "Invented documentation record. Replace with your own stored listing evidence and current vote.",
+      "vote": "interested"
+    },
+    {
+      "listingId": "example.invalid:synthetic-not-interested",
+      "title": "Synthetic format example: office furniture",
+      "description": "Invented documentation record. These sample votes do not represent the author's preferences.",
+      "vote": "not_interested"
+    }
+  ],
+  "signalCorrections": [
+    { "concept": "synthetic example concept", "polarity": "positive", "action": "removed" }
+  ]
+}

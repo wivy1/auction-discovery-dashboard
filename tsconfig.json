@@ -32,5 +32,5 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", ".wrangler", ".pnpm-store", "dist", "output", "outputs", "work"]
+  "exclude": ["node_modules", ".wrangler", ".pnpm-store", "dist", "output", "outputs", "work", "preferences.local", "models.local"]
 }

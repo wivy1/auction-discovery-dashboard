@@ -28,3 +28,9 @@ distribution has no bundled trained preference model, training corpus, or
 turnkey preference-training/activation workflow. Listings remain Unrated. The
 data-free ranking library is retained for development, but the application does
 not rebuild a profile or present its neutral scores as learned recommendations.
+
+The optional [preference starter](../../docs/preference-training.md) supplies
+typed user-implemented hooks, local file templates, and explicit validation,
+training, profile, and activation commands. It does not change these defaults
+or connect a scorer/profile publisher to the dashboard. Its example hooks fail
+until the user implements them with a compatible model and runtime bridge.

@@ -13,6 +13,8 @@ const eslintConfig = defineConfig([
     ".next/**",
     "out/**",
     "next-env.d.ts",
+    "preferences.local/**",
+    "models.local/**",
   ]),
 ]);
 
