@@ -115,7 +115,7 @@ Optional text enrichment can use your own installed Ollama models. Configure all
 
 ### Preference training and model templates
 
-The repository includes a [preference integration starter](docs/preference-training.md) with typed training, scoring, profile-generation, and activation hooks; local configuration and model-manifest templates; and commands that validate inputs and call your implementation. **No trained model or working trainer/scorer is included. Automatic learning and dashboard model activation are not turnkey features.** The `v0.1.0` release ZIP predates this starter; use the current `main` checkout for these files.
+The repository includes a [preference integration starter](docs/preference-training.md) with typed training, scoring, profile-generation, and activation hooks; local configuration and model-manifest templates; and commands that validate inputs and call your implementation. **No trained model or working trainer/scorer is included. Automatic learning and dashboard model activation are not turnkey features.** The starter is included in release `v0.1.1` and later.
 
 Run `pnpm preference init` after setup to create the ignored local files. Supply your own reviewed-listing snapshot and a compatible downloaded or locally trained model, then implement `preference-adapter.local.ts`. Use `pnpm preference check` to validate file contracts; `train`, `profile`, and `activate` call the hooks you implement. The example hooks deliberately stop until implemented, and setup downloads no models.
 
