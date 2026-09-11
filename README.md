@@ -1,9 +1,9 @@
-<h1 align="center"><img src="public/favicon.svg" width="70" alt="Auction Discovery logo"> Auction Discovery Dashboard</h1>
+<h1 align="center"><img src="public/favicon.svg" width="70" alt="Auction Discovery Dashboard logo"> Auction Discovery Dashboard</h1>
 
 <p align="center">A local app to monitor auction sites for listings you'll be interested in.</p>
 
 <p align="center">
-  <a href="https://github.com/wivy1/auction-discovery/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/wivy1/auction-discovery?display_name=tag&sort=semver"></a>
+  <a href="https://github.com/wivy1/auction-discovery-dashboard/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/wivy1/auction-discovery-dashboard?display_name=tag&sort=semver"></a>
   <img alt="Windows 10 or 11" src="https://img.shields.io/badge/Windows-10%20%2F%2011-6d28d9">
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
 </p>
@@ -65,7 +65,7 @@ The preference model learns associations between listing metadata and your **Int
 
 Requires Windows 10 or 11, Node.js 22.13 or newer, pnpm 11.7.0, and a modern browser.
 
-Clone the repository or [download the current `main` branch](https://github.com/wivy1/auction-discovery/archive/refs/heads/main.zip). Extract to a writable folder and run:
+Clone the repository or [download the current `main` branch](https://github.com/wivy1/auction-discovery-dashboard/archive/refs/heads/main.zip). Extract to a writable folder and run:
 
 ```powershell
 .\scripts\setup.cmd
