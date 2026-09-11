@@ -43,11 +43,11 @@ Switch between grid and list views. Search, filter, and sort as desired.
 
 Open a listing detail page for more details or to correct its lot classification.
 
-Once you've reviewed a listing, mark it as **Interested** or **Not interested**. These votes feed into the preference scoring model, which assigns the numeric score visible on each listing.
-
 <p align="center">
   <a href="docs/screenshots/screenshot2.png"><img src="docs/screenshots/screenshot2.png" width="850" alt="Listing details showing a three-item lot, included equipment, pickup information, and review controls"></a>
 </p>
+
+Once you've reviewed a listing, mark it as **Interested** or **Not interested**. These votes feed into the preference scoring model, which assigns the numeric score visible on each listing.
 
 ### Tuning the preference model
 
