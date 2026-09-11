@@ -1,3 +1,4 @@
+import { SCHEMA_V46_MIGRATION_STATEMENTS } from "./listing-end-state-v46-sql.ts";
 import {
   CREATE_SCHEMA_METADATA_SQL,
   DATABASE_SCHEMA_VERSION,
@@ -32,7 +33,7 @@ async function resolveDatabase(binding?: D1Database): Promise<D1Database> {
 }
 
 /**
- * Creates the public schema on an empty local D1 database. The public schema
+ * Creates or upgrades the public schema on a local D1 database. The public schema
  * has its own metadata marker and does not migrate private installation data.
  *
  * D1 executes `batch` statements serially and atomically. All schema objects
@@ -112,14 +113,17 @@ async function bootstrapDatabase(
 
   if (
     !Number.isInteger(currentVersion) ||
-    currentVersion !== 0
+    (currentVersion !== 0 && currentVersion !== 45)
   ) {
     throw new Error(
       `Unsupported auction-discovery database schema version ${currentVersion}; this build supports version ${DATABASE_SCHEMA_VERSION}.`,
     );
   }
 
-  const statements = PUBLIC_SCHEMA_STATEMENTS.map((sql) => database.prepare(sql));
+  const migrationSql = currentVersion === 45
+    ? SCHEMA_V46_MIGRATION_STATEMENTS
+    : PUBLIC_SCHEMA_STATEMENTS;
+  const statements = migrationSql.map((sql) => database.prepare(sql));
   await database.batch(statements);
 
   return { version: DATABASE_SCHEMA_VERSION, initialized: true };

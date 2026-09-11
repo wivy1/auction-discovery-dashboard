@@ -2458,3 +2458,19 @@ export type SourceAcquiredBundleRow = typeof sourceAcquiredBundles.$inferSelect;
 export type ImageContentBlobRow = typeof imageContentBlobs.$inferSelect;
 export type ListingImageContentLinkRow = typeof listingImageContentLinks.$inferSelect;
 export type ListingImageContentHeadRow = typeof listingImageContentHeads.$inferSelect;
+
+/** Operator state is separate from immutable source close-time evidence. */
+export const listingEndOverrides = sqliteTable(
+  "listing_end_overrides",
+  {
+    listingId: text("listing_id").primaryKey()
+      .references(() => listingStubs.id, { onDelete: "cascade" }),
+    markedAt: text("marked_at").notNull(),
+    source: text("source").notNull().default("operator_dashboard"),
+  },
+  (table) => [
+    check("listing_end_overrides_timestamp_check",
+      sql`${table.markedAt} glob '????-??-??T??:??:??.???Z' and julianday(${table.markedAt}) is not null`),
+    check("listing_end_overrides_source_check", sql`${table.source} = 'operator_dashboard'`),
+  ],
+);

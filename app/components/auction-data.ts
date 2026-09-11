@@ -1,3 +1,4 @@
+import { MAX_BULK_END_LISTINGS, parseBulkListingEndResult, type BulkListingEndResult } from "../../lib/listing-end-state";
 
 export type Vote = "interested" | "not_interested" | null;
 
@@ -133,6 +134,8 @@ export interface Listing {
   proximityEstimator?: string | null;
   priceAtScrape: string;
   closesAt: string;
+  /** Operator status only; the source close time remains unchanged. */
+  markedEndedAt?: string | null;
   actionDeadline: {
     at: string;
     basis: "live_auction_start";
@@ -212,7 +215,7 @@ export function listingIsPublisherHistoryOnly(
     listing.sourceFilters.length > 0;
 }
 
-/** Freezes exactly the actionable unvoted cards rendered at click time. */
+/** Returns the eligible unvoted identities from the supplied selection. */
 export function visibleBulkNotInterestedListingIds(
   visibleListings: readonly Pick<
     Listing,
@@ -1865,7 +1868,7 @@ export function parseBulkNotInterestedResponse(
   };
 }
 
-export async function saveBulkNotInterestedVotes(
+async function saveNotInterestedBatch(
   listingIds: readonly string[],
 ): Promise<{
   persisted: boolean;
@@ -2108,3 +2111,58 @@ export {
   triggerLocalBrowserSourceAcquisition as startBrowserSourceAcquisition,
   type LocalSourceAcquisitionSummary,
 } from "../../lib/sources/local-acquisition";
+
+/** Keeps each write bounded while retaining completed outcomes if a later batch fails. */
+export async function saveBulkNotInterestedVotes(listingIds: readonly string[]) {
+  const ids = [...new Set(listingIds)];
+  const outcomes: BulkNotInterestedOutcome[] = [];
+  const changed = new Set<string>();
+  for (let offset = 0; offset < ids.length; offset += MAX_BULK_END_LISTINGS) {
+    const result = await saveNotInterestedBatch(ids.slice(offset, offset + MAX_BULK_END_LISTINGS));
+    if (result.response) {
+      outcomes.push(...result.response.outcomes);
+      result.response.changedCanonicalListingIds.forEach((id) => changed.add(id));
+    }
+    if (!result.persisted) return {
+      ...result,
+      response: outcomes.length ? {
+        requestedCount: outcomes.length, outcomes, changedCanonicalListingIds: [...changed],
+      } : null,
+    };
+  }
+  return {
+    persisted: true,
+    response: { requestedCount: outcomes.length, outcomes, changedCanonicalListingIds: [...changed] },
+    errorCode: null, errorMessage: null, status: null,
+  };
+}
+
+export async function saveBulkListingEnds(listingIds: readonly string[]): Promise<{
+  persisted: boolean;
+  response: BulkListingEndResult | null;
+  errorMessage: string | null;
+}> {
+  const ids = [...new Set(listingIds)];
+  const outcomes: BulkListingEndResult["outcomes"] = [];
+  try {
+    for (let offset = 0; offset < ids.length; offset += MAX_BULK_END_LISTINGS) {
+      const batch = ids.slice(offset, offset + MAX_BULK_END_LISTINGS);
+      const response = parseBulkListingEndResult(await readJson<unknown>("/api/listings/end-batch", {
+        method: "PUT",
+        body: JSON.stringify({ listingIds: batch }),
+      }, { timeoutMs: BULK_VOTE_REQUEST_TIMEOUT_MS }));
+      if (!response || response.requestedCount !== batch.length ||
+          response.outcomes.some((outcome) => !batch.includes(outcome.listingId))) {
+        throw new ApiRequestError("Mark ended response does not match the selected listings");
+      }
+      outcomes.push(...response.outcomes);
+    }
+    return { persisted: true, response: { requestedCount: outcomes.length, outcomes }, errorMessage: null };
+  } catch (error) {
+    return {
+      persisted: false,
+      response: outcomes.length ? { requestedCount: outcomes.length, outcomes } : null,
+      errorMessage: error instanceof Error ? error.message : "Selected listings could not be marked ended",
+    };
+  }
+}

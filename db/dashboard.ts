@@ -1,3 +1,4 @@
+import { readListingEndOverrides } from "./listing-end-state";
 import { env } from "cloudflare:workers";
 import { createSequentialEnrichmentProviders, sha256Text } from "../lib/ai";
 import { getConfig } from "../lib/config";
@@ -2738,7 +2739,7 @@ export async function readDashboardPayload(
     canonicalRead: (vector) =>
       readCanonicalDashboardPayload(listingScope, reviewVisibility, vector),
   });
-  return result.payload;
+  return overlayListingEndState(result.payload);
 }
 
 /**
@@ -2752,7 +2753,7 @@ export async function readDashboardPayloadForReleasePrimeAudit(
   reviewVisibility: "policy" | "unfiltered" = "policy",
 ) {
   const vector = await readDashboardReleaseVector(env.DB);
-  return readWithDashboardReleasePrime({
+  const result = await readWithDashboardReleasePrime({
     database: env.DB,
     cacheKey: `${listingScope}:${reviewVisibility}`,
     decision: "optimized",
@@ -2764,6 +2765,7 @@ export async function readDashboardPayloadForReleasePrimeAudit(
         releaseVector,
       ),
   });
+  return { ...result, payload: await overlayListingEndState(result.payload) };
 }
 
 /**
@@ -3416,4 +3418,15 @@ async function listingIsReviewReady(listingId: string): Promise<boolean> {
   // admitted with a current actionable owner, exact route, and settled image.
   // Optional enrichment and scoring affect presentation only.
   return true;
+}
+
+/** Operator status stays fresh even when the immutable dashboard payload is cached. */
+async function overlayListingEndState<T extends { listings: readonly { id: string }[] }>(payload: T): Promise<T> {
+  const overrides = await readListingEndOverrides(env.DB, payload.listings.map((listing) => listing.id));
+  return {
+    ...payload,
+    listings: payload.listings.map((listing) => ({
+      ...listing, markedEndedAt: overrides.get(listing.id) ?? null,
+    })),
+  };
 }

@@ -1,5 +1,6 @@
+import { LISTING_END_OVERRIDES_TABLE_SQL } from "./listing-end-state-v46-sql.ts";
 /** Fresh public schema. Future changes must migrate this public version. */
-export const DATABASE_SCHEMA_VERSION = 45;
+export const DATABASE_SCHEMA_VERSION = 46;
 export const CREATE_SCHEMA_METADATA_SQL = `
   CREATE TABLE IF NOT EXISTS _auction_discovery_public_schema (
     singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
@@ -4972,7 +4973,8 @@ export const PUBLIC_SCHEMA_STATEMENTS: readonly string[] = [
       ON approval.receipt_id = receipt.receipt_id
     LEFT JOIN preference_prospective_promotion_authorizations_v2 authorization
       ON authorization.receipt_id = receipt.receipt_id`,
-  `INSERT INTO _auction_discovery_public_schema (singleton, version, applied_at) VALUES (1, 45, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) ON CONFLICT(singleton) DO UPDATE SET version=excluded.version, applied_at=excluded.applied_at`
+  LISTING_END_OVERRIDES_TABLE_SQL,
+  `INSERT INTO _auction_discovery_public_schema (singleton, version, applied_at) VALUES (1, 46, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) ON CONFLICT(singleton) DO UPDATE SET version=excluded.version, applied_at=excluded.applied_at`
 ];
 
 

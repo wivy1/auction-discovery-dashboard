@@ -5316,4 +5316,13 @@ CREATE VIEW preference_prospective_readiness_v2 AS
     LEFT JOIN preference_prospective_promotion_authorizations_v2 authorization
       ON authorization.receipt_id = receipt.receipt_id;
 
-INSERT INTO _auction_discovery_public_schema (singleton, version, applied_at) VALUES (1, 45, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) ON CONFLICT(singleton) DO UPDATE SET version=excluded.version, applied_at=excluded.applied_at;
+CREATE TABLE IF NOT EXISTS listing_end_overrides (
+  listing_id TEXT PRIMARY KEY NOT NULL REFERENCES listing_stubs(id) ON DELETE CASCADE,
+  marked_at TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'operator_dashboard',
+  CONSTRAINT listing_end_overrides_timestamp_check
+    CHECK (marked_at GLOB '????-??-??T??:??:??.???Z' AND julianday(marked_at) IS NOT NULL),
+  CONSTRAINT listing_end_overrides_source_check CHECK (source = 'operator_dashboard')
+);
+
+INSERT INTO _auction_discovery_public_schema (singleton, version, applied_at) VALUES (1, 46, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) ON CONFLICT(singleton) DO UPDATE SET version=excluded.version, applied_at=excluded.applied_at;

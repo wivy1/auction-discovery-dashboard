@@ -1,5 +1,7 @@
 "use client";
 
+import { listingTimeUnavailable } from "../../lib/listing-end-state";
+
 import {
   type DashboardListingScope,
   type DashboardPayload,
@@ -37,6 +39,7 @@ import {
   saveOriginPostalCode,
   saveProfileSignalFeedback,
   saveBulkNotInterestedVotes,
+  saveBulkListingEnds,
   saveVote,
   setSourceEnabled,
   startLocalNightlyRun,
@@ -353,6 +356,7 @@ function formatClosing(value: string): string {
 }
 
 function formatListingClosing(listing: Listing): string {
+  if (listing.markedEndedAt) return "Marked ended";
   if (listing.actionDeadline?.basis === "live_auction_start") {
     return formatClosing(listing.actionDeadline.at);
   }
@@ -361,6 +365,7 @@ function formatListingClosing(listing: Listing): string {
 }
 
 function actionDeadlineLabel(listing: Listing): string {
+  if (listing.markedEndedAt) return "Status";
   if (listing.actionDeadline?.basis !== "live_auction_start") return "Closes";
   return "Live auction";
 }
@@ -1677,12 +1682,16 @@ function ListingCard({
   onVote,
   saving,
   referenceTime,
+  selected,
+  onSelect,
 }: {
   listing: Listing;
   onOpen: () => void;
   onVote: (vote: Exclude<Vote, null>) => void;
   saving: boolean;
   referenceTime: number;
+  selected: boolean;
+  onSelect: (selected: boolean) => void;
 }) {
   const ended = isListingEnded(listing, referenceTime);
   const publisherHistoryOnly = listingIsPublisherHistoryOnly(listing);
@@ -1693,7 +1702,16 @@ function ListingCard({
   const profileScore = listingRecommendationDisplayScore(listing);
   const recommendationUnrated = profileScore === null;
   return (
-    <article className="listing-card">
+    <article className="listing-card" data-selected={selected ? "true" : undefined}>
+      <label className="listing-selection">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={(event) => onSelect(event.target.checked)}
+          disabled={saving}
+          aria-label={`Select ${listing.title}`}
+        />
+      </label>
       <button
         className="listing-photo-button"
         type="button"
@@ -1889,6 +1907,8 @@ function DiscoverView({
   savingVote,
   bulkVoting,
   bulkNotInterested,
+  bulkEnded,
+  bulkEnding,
   undoVote,
   canUndoVote,
   undoingVote,
@@ -1914,6 +1934,8 @@ function DiscoverView({
   savingVote: string | null;
   bulkVoting: boolean;
   bulkNotInterested: (listingIds: readonly string[]) => void;
+  bulkEnded: (listingIds: readonly string[]) => void;
+  bulkEnding: boolean;
   undoVote: () => void;
   canUndoVote: boolean;
   undoingVote: boolean;
@@ -2012,10 +2034,32 @@ function DiscoverView({
     : filters.vote === "all" ? "All listings" : "Review history";
   const displayedListings = waitingForListingScope ? [] : filteredListings;
   const visibleListings = displayedListings.slice(0, visibleCount);
-  const visibleBulkNotInterestedIds = useMemo(
-    () => visibleBulkNotInterestedListingIds(visibleListings),
-    [visibleListings],
+  const selectionScope = JSON.stringify(filters);
+  const [selection, setSelection] = useState<{ scope: string; ids: ReadonlySet<string> }>(
+    () => ({ scope: selectionScope, ids: new Set() }),
   );
+  // A changed filter starts a new selection, including when an old filter returns.
+  if (selection.scope !== selectionScope) {
+    setSelection({ scope: selectionScope, ids: new Set() });
+  }
+  const selectedListings = selection.scope === selectionScope
+    ? displayedListings.filter((listing) => selection.ids.has(listing.id))
+    : [];
+  const selectedIds = new Set(selectedListings.map((listing) => listing.id));
+  const allFilteredSelected = displayedListings.length > 0 &&
+    selectedIds.size === displayedListings.length;
+  const selectedNotInterestedIds = visibleBulkNotInterestedListingIds(selectedListings);
+  const selectedEndedIds = selectedListings
+    .filter((listing) => !listing.markedEndedAt && listingTimeUnavailable(listing))
+    .map((listing) => listing.id);
+  const selectListing = (listingId: string, selected: boolean) => {
+    setSelection((current) => {
+      const ids = new Set(current.scope === selectionScope ? current.ids : []);
+      if (selected) ids.add(listingId);
+      else ids.delete(listingId);
+      return { scope: selectionScope, ids };
+    });
+  };
   const endedListingsAvailableForCurrentFilters = displayedListings.length === 0
     && !filters.includeEnded
     && data.listings.some((listing) =>
@@ -2130,19 +2174,43 @@ function DiscoverView({
             </p>
           </div>
           <div className="results-controls">
+            <span className="selection-count">{selectedIds.size.toLocaleString()} selected</span>
             <button
               type="button"
               className="secondary-button"
-              onClick={() => bulkNotInterested([...visibleBulkNotInterestedIds])}
+              disabled={displayedListings.length === 0 || bulkVoting || savingVote !== null || undoingVote}
+              onClick={() => setSelection({
+                scope: selectionScope,
+                ids: new Set(allFilteredSelected ? [] : displayedListings.map((listing) => listing.id)),
+              })}
+              title={allFilteredSelected
+                ? "Deselect every listing matching the current filters"
+                : "Select every listing matching the current filters, including cards not yet shown"}
+            >
+              {allFilteredSelected ? "Deselect all" : "Select all"}
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => bulkNotInterested([...selectedNotInterestedIds])}
               disabled={
-                visibleBulkNotInterestedIds.length === 0 || bulkVoting ||
+                selectedNotInterestedIds.length === 0 || bulkVoting ||
                 savingVote !== null || undoingVote
               }
-              title="Mark only the currently rendered unvoted cards Not interested"
+              title="Mark selected eligible unvoted listings Not interested"
             >
-              {bulkVoting
-                ? "Marking visible cards"
+              {bulkVoting && !bulkEnding
+                ? "Marking selected cards"
                 : "Mark Not Interested"}
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={selectedEndedIds.length === 0 || bulkVoting || savingVote !== null || undoingVote}
+              onClick={() => bulkEnded([...selectedEndedIds])}
+              title="Mark selected listings without a closing time as ended"
+            >
+              {bulkEnding ? "Marking ended" : "Mark ended"}
             </button>
             <button
               type="button"
@@ -2207,6 +2275,8 @@ function DiscoverView({
                 onVote={(nextVote) => vote(listing, nextVote)}
                 saving={savingVote !== null || bulkVoting}
                 referenceTime={referenceTime}
+                selected={selectedIds.has(listing.id)}
+                onSelect={(selected) => selectListing(listing.id, selected)}
               />
             ))
           ) : (
@@ -3073,7 +3143,9 @@ function DetailPanel({
               <div>
                 <dt>{actionDeadlineLabel(listing)}</dt>
                 <dd>{formatListingClosing(listing)}</dd>
-                {listing.actionDeadline?.basis === "live_auction_start" ? (
+                {listing.markedEndedAt && listing.actionDeadline ? (
+                  <small>Source auction start: {formatDate(listing.actionDeadline.at)} local</small>
+                ) : listing.actionDeadline?.basis === "live_auction_start" ? (
                   <small>
                     {`${formatDate(listing.actionDeadline.at)} local · be ready to bid at this time`}
                   </small>
@@ -3252,6 +3324,7 @@ export function AuctionDashboard({
     useState<Listing | null>(null);
   const [savingVote, setSavingVote] = useState<string | null>(null);
   const [bulkVoting, setBulkVoting] = useState(false);
+  const [bulkEnding, setBulkEnding] = useState(false);
   const [voteHistory, setVoteHistory] = useState<readonly VoteTransition[]>([]);
   const [undoingVote, setUndoingVote] = useState(false);
   const [savingLot, setSavingLot] = useState<string | null>(null);
@@ -3992,9 +4065,9 @@ export function AuctionDashboard({
     setBulkVoting(true);
     try {
       const result = await saveBulkNotInterestedVotes(frozenListingIds);
-      if (!result.persisted || !result.response) {
+      if (!result.response) {
         setToast(
-          `Visible votes could not be saved${
+          `Selected votes could not be saved${
             result.errorMessage ? `: ${result.errorMessage}` : ""
           }`,
         );
@@ -4039,7 +4112,7 @@ export function AuctionDashboard({
       }));
 
       const messages = [
-        `Marked ${changedCanonicalIds.size.toLocaleString()} visible ${
+        `Marked ${changedCanonicalIds.size.toLocaleString()} selected ${
           changedCanonicalIds.size === 1 ? "listing" : "listings"
         } Not interested`,
       ];
@@ -4047,10 +4120,52 @@ export function AuctionDashboard({
         messages.push(`${alreadySaved.toLocaleString()} already saved`);
       }
       if (skipped > 0) messages.push(`${skipped.toLocaleString()} skipped`);
+      if (!result.persisted) messages.push(`Stopped: ${result.errorMessage ?? "remaining selected listings were not saved"}`);
       setToast(messages.join("; "));
     } finally {
       voteMutationRef.current = false;
       setBulkVoting(false);
+    }
+  };
+
+  const handleBulkEnded = async (listingIds: readonly string[]) => {
+    if (listingIds.length === 0 || voteMutationRef.current || lotMutationRef.current) return;
+    const frozenListingIds = [...new Set(listingIds)];
+    voteMutationRef.current = true;
+    markDashboardMutation();
+    setBulkVoting(true);
+    setBulkEnding(true);
+    try {
+      const result = await saveBulkListingEnds(frozenListingIds);
+      if (!result.response) {
+        setToast(`Listings could not be marked ended: ${result.errorMessage ?? "request failed"}`);
+        return;
+      }
+      const saved = new Map<string, string>();
+      const changed = new Set<string>();
+      let skipped = 0;
+      for (const outcome of result.response.outcomes) {
+        if (outcome.markedEndedAt && outcome.canonicalListingId) {
+          saved.set(outcome.listingId, outcome.markedEndedAt);
+          saved.set(outcome.canonicalListingId, outcome.markedEndedAt);
+          if (outcome.status === "changed") changed.add(outcome.canonicalListingId);
+        } else skipped += 1;
+      }
+      setData((current) => ({
+        ...current,
+        listings: current.listings.map((listing) => saved.has(listing.id)
+          ? { ...listing, markedEndedAt: saved.get(listing.id)! } : listing),
+      }));
+      setSelectedListingSnapshot((current) => current && saved.has(current.id)
+        ? { ...current, markedEndedAt: saved.get(current.id)! } : current);
+      const messages = [`Marked ${changed.size.toLocaleString()} selected ${changed.size === 1 ? "listing" : "listings"} ended`];
+      if (skipped) messages.push(`${skipped.toLocaleString()} skipped`);
+      if (!result.persisted) messages.push(`Stopped: ${result.errorMessage ?? "remaining selected listings were not saved"}`);
+      setToast(messages.join("; "));
+    } finally {
+      voteMutationRef.current = false;
+      setBulkVoting(false);
+      setBulkEnding(false);
     }
   };
 
@@ -4384,6 +4499,8 @@ export function AuctionDashboard({
               vote={handleVote}
               savingVote={savingVote}
               bulkVoting={bulkVoting}
+              bulkEnding={bulkEnding}
+              bulkEnded={(listingIds) => { void handleBulkEnded(listingIds); }}
               bulkNotInterested={(listingIds) => {
                 void handleBulkNotInterested(listingIds);
               }}

@@ -5595,3 +5595,27 @@ a {
     min-height: 36px;
   }
 }
+
+/* Listing selection stays separate from the button that opens its detail. */
+.listing-card { position: relative; }
+.listing-selection {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  padding: 5px;
+  border-radius: 6px;
+  background: var(--panel, #fff);
+  box-shadow: 0 1px 5px #0003;
+}
+.listing-selection input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent-dark);
+  cursor: pointer;
+}
+.listing-card[data-selected="true"] { outline: 2px solid var(--accent-dark); }
+.selection-count { color: var(--muted); font-size: 11px; white-space: nowrap; }

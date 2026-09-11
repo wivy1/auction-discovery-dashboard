@@ -103,6 +103,7 @@ export function matchesRecommendationScoreRange(
  * an individual lot has ended.
  */
 export function isListingEnded(listing: Listing, referenceTime: number): boolean {
+  if (listing.markedEndedAt) return true;
   if (!Number.isFinite(referenceTime)) return false;
   const timestamp = listingEndTimestamp(listing);
   return timestamp !== null && timestamp <= referenceTime;
