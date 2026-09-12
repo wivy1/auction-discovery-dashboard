@@ -1,6 +1,6 @@
 <h1 align="center"><img src="public/favicon.svg" width="70" alt="Auction Discovery Dashboard logo"> Auction Discovery Dashboard</h1>
 
-<p align="center">A local app to monitor auction sites for listings you'll be interested in.</p>
+<p align="center">A local app to monitor obscure auction sites for listings you're interested in.</p>
 
 <p align="center">
   <a href="https://github.com/wivy1/auction-discovery-dashboard/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/wivy1/auction-discovery-dashboard?display_name=tag&sort=semver"></a>
@@ -8,10 +8,9 @@
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
 </p>
 
-If you're like me, you manually refresh 20 obscure surplus auction sites a few times each week, reviewing all of the listings in all of the categories because the people posting the half-million-dollar piece of lab equipment have no idea what they are posting. I built Auction Discovery Dashboard to automate that process by learning your preferences.
+If you're like me, you manually refresh 20 surplus auction sites a few times each week, reviewing all of the listings in all of the categories because the people posting the half-million-dollar piece of lab equipment have no idea how to describe what they are posting. I built Auction Discovery Dashboard to automate that process.
 
 Auction Discovery Dashboard:
-
 - Automatically scrapes all of your obscure auction sites.
 - Enriches listings with manufacturer, model, equipment type, and condition, and lists all components of a batch lot.
 - Estimates driving time to the pickup locations.
@@ -27,11 +26,12 @@ Auction Discovery Dashboard:
 
 Run discovery manually or schedule it to run unattended, including overnight. Each run:
 
-1. Collects current listings from your enabled sources and retains their original descriptions, source links, prices, and closing information when available.
-2. Caches primary images locally and resolves pickup locations relative to your US ZIP code.
+1. Collects current listings from your sources.
+2. Caches images locally and resolves pickup locations relative to your US ZIP code.
 3. Groups eligible listings into estimated one-way drives of up to 2 hours, 2-4 hours, or 4-8 hours.
-4. With AI configured, extracts manufacturers, model numbers, equipment types, condition, and included items from listing text. It identifies single items and multi-item lots, records the stated lot contents, and generates text embeddings for downstream matching.
-5. A preference estimator assigns 0-100 interest scores to each listing based upon your preference voting history.
+4. Extracts manufacturers, model numbers, equipment types, condition from listing text.
+5. Identifies single items and multi-item lots, records the stated lot contents.
+6. Assigns a 0-100 interest score to each listing based upon your voting history.
 
 ### Reviewing listings
 
@@ -41,7 +41,7 @@ Switch between grid and list views. Search, filter, and sort as desired.
   <a href="docs/screenshots/screenshot3.png"><img src="docs/screenshots/screenshot3.png" width="850" alt="List view with the Discover, Interest profile, and Settings pages in the sidebar"></a>
 </p>
 
-Open a listing detail page for more details or to correct its lot classification.
+Click on a listing to open a detail page.
 
 <p align="center">
   <a href="docs/screenshots/screenshot2.png"><img src="docs/screenshots/screenshot2.png" width="850" alt="Listing details showing a three-item lot, included equipment, pickup information, and review controls"></a>
@@ -51,7 +51,9 @@ Once you've reviewed a listing, mark it as **Interested** or **Not interested**.
 
 ### Tuning the preference model
 
-The preference model learns associations between listing metadata and your **Interested** / **Not interested** votes. Higher scores indicate stronger predicted interest. The **Interest profile** summarizes these patterns and shows the tags contributing positive and negative signals. Reject individual tags when they misrepresent your interests.
+The preference model learns associations between listing metadata and your **Interested** / **Not interested** votes. Higher scores indicate stronger predicted interest. 
+
+The **Interest profile** summarizes these patterns and shows the tags contributing positive and negative signals. Reject individual tags when they misrepresent your interests.
 
 <p align="center">
   <a href="docs/screenshots/screenshot4.png"><img src="docs/screenshots/screenshot4.png" width="850" alt="Generated interest summary and positive tags with supporting vote counts and override controls"></a>
@@ -72,7 +74,7 @@ Clone the repository or [download the current `main` branch](https://github.com/
 Copy-Item .env.example .env.local
 ```
 
-1. Configure your source adapters and optional models using the sections below. Browser-based sources also require `pnpm browser:install`.
+1. Configure your source adapters and (optional) models using the sections below. Browser-based sources also require `pnpm browser:install`.
 2. Open **Auction Discovery.cmd**, wait for **Dashboard runtime is ready**, then visit [localhost:3000](http://localhost:3000). Keep the launcher terminal open.
 3. In **Settings**, save your US ZIP code and enable your sources. Open **Discover** and click **Run discovery**.
 4. Use **Settings > Scheduled discovery** to choose unattended run times.
@@ -97,7 +99,7 @@ Listing enrichment and preference scoring require local AI models of your choosi
 
 Install [Ollama](https://docs.ollama.com/quickstart) and supply a text model plus an embedding model.
 
-A starting configuration is [Qwen3.6 27B Q4_K_M](https://ollama.com/library/qwen3.6:27b-q4_K_M) for structured extraction and [Qwen3-Embedding 0.6B](https://ollama.com/library/qwen3-embedding:0.6b) for embeddings. The downloads are about 17GB and 639MB; allow additional memory for inference. [Qwen3.5 9B](https://ollama.com/library/qwen3.5:9b), about 6.6GB, is a smaller text-model alternative. These are starting points; comparative extraction quality has not been benchmarked for this README.
+My configuration (with an RTX 3090) is [Qwen3.6 27B Q4_K_M](https://ollama.com/library/qwen3.6:27b-q4_K_M) for structured extraction and [Qwen3-Embedding 0.6B](https://ollama.com/library/qwen3-embedding:0.6b) for embeddings. [Qwen3.5 9B](https://ollama.com/library/qwen3.5:9b), about 6.6GB, is a smaller text-model alternative. 
 
 ```powershell
 ollama pull qwen3.6:27b-q4_K_M
