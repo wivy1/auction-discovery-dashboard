@@ -21,6 +21,8 @@ try {
   if (-not $gate.WaitOne([TimeSpan]::FromSeconds(30))) {
     throw "The dashboard host was not released after bounded Job Object assignment."
   }
+  # Collect native Worker wrappers before the external-entity table fills.
+  $env:MINIFLARE_WORKERD_V8_FLAGS = "--max-old-space-size=512"
   & $NodeExe $VinextCli dev
   exit $LASTEXITCODE
 } finally {

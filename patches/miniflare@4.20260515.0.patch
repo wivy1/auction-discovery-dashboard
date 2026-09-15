@@ -1,0 +1,14 @@
+diff --git a/dist/src/index.js b/dist/src/index.js
+index e0cc85fcbda3da98620dcb0b760bf7bea70ad661..ddf3a4c3767fe1d7f13da9b160356d4b82c50ec6 100644
+--- a/dist/src/index.js
++++ b/dist/src/index.js
+@@ -89104,7 +89104,8 @@ var Miniflare = class _Miniflare {
+       sockets,
+       extensions,
+       structuredLogging: this.#structuredWorkerdLogs,
+-      autogates: process.env.MINIFLARE_WORKERD_AUTOGATES ? process.env.MINIFLARE_WORKERD_AUTOGATES.split(" ") : []
++      autogates: process.env.MINIFLARE_WORKERD_AUTOGATES ? process.env.MINIFLARE_WORKERD_AUTOGATES.split(" ") : [],
++      v8Flags: process.env.MINIFLARE_WORKERD_V8_FLAGS ? process.env.MINIFLARE_WORKERD_V8_FLAGS.split(" ") : []
+     };
+   }
+   async #assembleAndUpdateConfig() {

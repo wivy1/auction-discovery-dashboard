@@ -6,3 +6,5 @@ allowBuilds:
 minimumReleaseAgeExclude:
   - playwright-core@1.63.0
   - playwright@1.63.0
+patchedDependencies:
+  miniflare@4.20260515.0: patches/miniflare@4.20260515.0.patch

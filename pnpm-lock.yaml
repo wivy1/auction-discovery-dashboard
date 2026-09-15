@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  miniflare@4.20260515.0: ebeefe9cbc06fb000080e208a1216013f11a6bfb297d3cea8c6159b6b4dbe851
+
 importers:
 
   .:
@@ -3765,7 +3768,7 @@ snapshots:
   '@cloudflare/vite-plugin@1.37.1(vite@8.0.13(@types/node@22.19.19)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.0))(workerd@1.20260515.1)(wrangler@4.92.0(@cloudflare/workers-types@4.20260515.1))':
     dependencies:
       '@cloudflare/unenv-preset': 2.16.1(unenv@2.0.0-rc.24)(workerd@1.20260515.1)
-      miniflare: 4.20260515.0
+      miniflare: 4.20260515.0(patch_hash=ebeefe9cbc06fb000080e208a1216013f11a6bfb297d3cea8c6159b6b4dbe851)
       unenv: 2.0.0-rc.24
       vite: 8.0.13(@types/node@22.19.19)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.0)
       wrangler: 4.92.0(@cloudflare/workers-types@4.20260515.1)
@@ -6157,7 +6160,7 @@ snapshots:
 
   mime-db@1.54.0: {}
 
-  miniflare@4.20260515.0:
+  miniflare@4.20260515.0(patch_hash=ebeefe9cbc06fb000080e208a1216013f11a6bfb297d3cea8c6159b6b4dbe851):
     dependencies:
       '@cspotcode/source-map-support': 0.8.1
       sharp: 0.34.5
@@ -7004,7 +7007,7 @@ snapshots:
       '@cloudflare/unenv-preset': 2.16.1(unenv@2.0.0-rc.24)(workerd@1.20260515.1)
       blake3-wasm: 2.1.5
       esbuild: 0.27.3
-      miniflare: 4.20260515.0
+      miniflare: 4.20260515.0(patch_hash=ebeefe9cbc06fb000080e208a1216013f11a6bfb297d3cea8c6159b6b4dbe851)
       path-to-regexp: 6.3.0
       unenv: 2.0.0-rc.24
       workerd: 1.20260515.1
