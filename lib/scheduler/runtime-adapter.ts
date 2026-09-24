@@ -28,7 +28,14 @@ export type SchedulerAdapterAction =
   | "abort_before_callback"
   | "reconcile_callback"
   | "transition_to_preparation"
+  | "reconcile_release_freshness"
   | "record_execution_evidence";
+
+export type SourceReleaseFreshnessResult = {
+  status: "settled" | "queued" | "upstream_work_pending";
+  checkedSourceIds: string[];
+  queuedSourceIds: string[];
+};
 
 /**
  * Typed boundary for the Worker-owned queue/reservation implementation. The
@@ -59,6 +66,7 @@ export interface NightlySchedulerRuntimeAdapter {
   transitionToPreparation?(
     sourceOutcomes: readonly SchedulerSourceCampaignOutcome[],
   ): Promise<void>;
+  reconcileReleaseFreshness?(): Promise<SourceReleaseFreshnessResult>;
 }
 
 /**

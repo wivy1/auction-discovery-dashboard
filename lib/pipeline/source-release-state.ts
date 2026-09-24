@@ -991,13 +991,16 @@ export function changedDashboardReleaseSourceIds(
  * Projects one source's exact release evidence from the current
  * operational rows. It does not reinterpret source truth or modify it.
  */
-export async function readProjectedSourceReleaseEvidence(input: {
+export async function readSourceReleaseGenerationVector(input: {
   readonly database: D1Database;
   readonly sourceId: string;
-}): Promise<SourceReleaseAggregateEvidence> {
+}): Promise<{
+  readonly coverageMode: SourceReleaseCoverageMode;
+  readonly generationVector: readonly SourceReleaseGenerationEntry[];
+  readonly generationVectorHash: Sha256Identity;
+}> {
   const sourceId = boundedText(input.sourceId, "Source ID", 256);
-  const [rows, generationResult, coverageRow] = await Promise.all([
-    readProjectedSourceReleaseRows(input.database, sourceId),
+  const [generationResult, coverageRow] = await Promise.all([
     input.database.prepare(`
       SELECT domain, scope_type, scope_id, generation, fingerprint,
         derivation_version
@@ -1053,6 +1056,22 @@ export async function readProjectedSourceReleaseEvidence(input: {
       identityHash: await hashCanonicalJson(entries),
     }));
   }
+  return Object.freeze({
+    coverageMode,
+    generationVector: Object.freeze(generationVector),
+    generationVectorHash: await hashCanonicalJson({ coverageMode, entries: generationVector }),
+  });
+}
+
+export async function readProjectedSourceReleaseEvidence(input: {
+  readonly database: D1Database;
+  readonly sourceId: string;
+}): Promise<SourceReleaseAggregateEvidence> {
+  const sourceId = boundedText(input.sourceId, "Source ID", 256);
+  const [rows, { coverageMode, generationVector }] = await Promise.all([
+    readProjectedSourceReleaseRows(input.database, sourceId),
+    readSourceReleaseGenerationVector(input),
+  ]);
   const normalizedRows = rows.map((row) => {
     const listingId = boundedText(row.listing_id, "Projected listing ID", 512);
     const releaseInputHash = sha256(

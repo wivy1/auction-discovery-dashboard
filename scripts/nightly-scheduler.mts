@@ -32,6 +32,7 @@ import {
   NIGHTLY_SCHEDULER_ADAPTER_SCHEMA_VERSION,
   type NightlySchedulerRuntimeAdapter,
   type SchedulerAdapterAction,
+  type SourceReleaseFreshnessResult,
 } from "../lib/scheduler/runtime-adapter.ts";
 import { NIGHTLY_SCHEDULER_AUTHORIZATION_HEADER } from
   "../lib/scheduler/runtime-authorization.ts";
@@ -201,6 +202,7 @@ export interface NightlySchedulerCliDependencies {
 export interface ScopedNightlySchedulerRuntimeAdapter
   extends NightlySchedulerRuntimeAdapter {
   setPreparationScope(scope: "core" | "maintenance"): void;
+  reconcileReleaseFreshness(): Promise<SourceReleaseFreshnessResult>;
 }
 
 interface ReconciledExternalCallbackOutcome {
@@ -1268,6 +1270,52 @@ export function createHttpSchedulerRuntimeAdapter(input: {
         );
       }
     },
+    async reconcileReleaseFreshness() {
+      if (!transitionedToPreparation || includeSourceAcquisitions) {
+        throw new SchedulerRuntimeError(
+          "scheduler_release_freshness_scope_invalid",
+          "Release freshness requires source-disabled preparation authorization",
+        );
+      }
+      const remainingMs = input.deadlineAtMs === undefined
+        ? ADAPTER_REQUEST_TIMEOUT_MS
+        : input.deadlineAtMs - snapshotNow().getTime();
+      if (remainingMs <= 0) {
+        throw new SchedulerRuntimeError("scheduler_release_freshness_deadline", "Release freshness exceeded the workflow deadline");
+      }
+      const response = await input.request({
+        method: "POST",
+        url: endpoint,
+        body: Object.freeze({
+          schemaVersion: NIGHTLY_SCHEDULER_ADAPTER_SCHEMA_VERSION,
+          action: "reconcile_release_freshness" satisfies SchedulerAdapterAction,
+        }),
+        timeoutMs: Math.min(ADAPTER_REQUEST_TIMEOUT_MS, remainingMs),
+        maxResponseBytes: MAX_LOCAL_JSON_BYTES,
+        headers: schedulerAuthorizationHeaders(),
+        signal: input.signal,
+      });
+      assertAdapterStatus(response, "reconcile_release_freshness");
+      const result = isRecord(response.body) &&
+          response.body.schemaVersion === NIGHTLY_SCHEDULER_ADAPTER_SCHEMA_VERSION
+        ? response.body.result : null;
+      // Published heads survive adapter removal. These authenticated, server-derived
+      // IDs use the persisted source syntax and scan bound, not the current registry.
+      const validIds = (value: unknown): value is string[] => Array.isArray(value) &&
+        value.length <= 32 && value.every(id => typeof id === "string" && /^[a-z][a-z0-9_-]{0,63}$/u.test(id)) &&
+        new Set(value).size === value.length;
+      if (
+        !isRecord(result) || Object.keys(result).sort().join(",") !== "checkedSourceIds,queuedSourceIds,status" ||
+        !["settled", "queued", "upstream_work_pending"].includes(String(result.status)) ||
+        !validIds(result.checkedSourceIds) || !validIds(result.queuedSourceIds) ||
+        result.queuedSourceIds.some(id => !(result.checkedSourceIds as string[]).includes(id)) ||
+        (result.status === "queued" && result.queuedSourceIds.length === 0) ||
+        (result.status === "settled" && result.queuedSourceIds.length !== 0)
+      ) {
+        throw new SchedulerRuntimeError("scheduler_release_freshness_contract_mismatch", "The release freshness response was invalid");
+      }
+      return result as SourceReleaseFreshnessResult;
+    },
     async transitionToPreparation(
       sourceOutcomes: readonly SchedulerSourceCampaignOutcome[],
     ) {
@@ -1839,6 +1887,57 @@ function exactGenericMaintenanceRetryBoundary(
   )).toISOString();
 }
 
+function prospectiveFinalPreparationBoundary(result: SchedulerRunResult): boolean {
+  return (result.classification === "clean_empty" || result.classification === "deterministic_terminal") &&
+    result.coreProgress.remaining === 0 && result.maintenanceProgress.remaining === 0;
+}
+
+async function reconcileFinalReleaseFreshness(
+  input: {
+    readonly adapter: ScopedNightlySchedulerRuntimeAdapter;
+    readonly deadlineAtMs: number;
+    readonly now?: () => Date;
+  },
+  result: SchedulerRunResult,
+): Promise<{ result: SchedulerRunResult; snapshot: SchedulerSnapshot | null }> {
+  if (!workflowDeadlineAdmits(input.deadlineAtMs, MAINTENANCE_MINIMUM_SETTLEMENT_RESERVE_MS, input.now)) {
+    return { result: terminalizeWorkflowDeadlineResult(result), snapshot: null };
+  }
+  let freshness: SourceReleaseFreshnessResult;
+  try {
+    freshness = await input.adapter.reconcileReleaseFreshness();
+  } catch (error) {
+    const reason = error instanceof SchedulerRuntimeError ? error.reasonCode : "unexpected_error";
+    const status = error instanceof SchedulerRuntimeError && error.httpStatus !== null ? `:http_${error.httpStatus}` : "";
+    return {
+      result: Object.freeze({ ...result, classification: "handler_failure_prior_head_preserved" as const,
+        tailReasonCodes: Object.freeze([...result.tailReasonCodes, `source_release_freshness_failed:${reason}${status}`]) }),
+      snapshot: null,
+    };
+  }
+  if ((input.now?.() ?? new Date()).getTime() >= input.deadlineAtMs) {
+    return { result: terminalizeWorkflowDeadlineResult(result), snapshot: null };
+  }
+  if (freshness.status === "settled") return { result, snapshot: null };
+  const snapshot = await input.adapter.readSnapshot();
+  if ((input.now?.() ?? new Date()).getTime() >= input.deadlineAtMs) {
+    return { result: terminalizeWorkflowDeadlineResult(result), snapshot: null };
+  }
+  const remaining = snapshot.remainingWork;
+  const progress = (scope: "core" | "maintenance") => remaining ? {
+    ready: remaining[`${scope}Ready`], deferred: remaining[`${scope}Deferred`], claimed: remaining[`${scope}Claimed`],
+    remaining: remaining[`${scope}Ready`] + remaining[`${scope}Deferred`] + remaining[`${scope}Claimed`],
+  } : result[`${scope}Progress`];
+  return {
+    result: Object.freeze({ ...result, classification: "retryable_pressure" as const,
+      earliestAvailableAt: (input.now?.() ?? new Date()).toISOString(),
+      tailReasonCodes: Object.freeze([...result.tailReasonCodes, `source_release_freshness_${freshness.status}`]),
+      coreProgress: progress("core"), maintenanceProgress: progress("maintenance"),
+    }),
+    snapshot,
+  };
+}
+
 async function runAdapterScheduler(input: {
   readonly options: NightlySchedulerCliOptions;
   readonly adapter: ScopedNightlySchedulerRuntimeAdapter;
@@ -1872,75 +1971,125 @@ async function runAdapterScheduler(input: {
   const existingCatalogPreparationScope = input.options.existingCatalogMaintenanceOnly
     ? "maintenance" as const
     : "core" as const;
-  const sourcePhase = await runNightlyScheduler({
-    workSource: {
-      readSnapshot() {
-        if (initial !== null) {
-          const snapshot = initial;
-          initial = null;
-          return Promise.resolve(snapshot);
-        }
-        return input.adapter.readSnapshot();
+  let sourcePhase: SchedulerRunResult;
+  let existingCatalogCombined: SchedulerRunResult | null = null;
+  let existingCatalogContinuation: OptimizedPreparationContinuationState = { retriedNoProgressSignatures: [] };
+  let existingCatalogQuantum = 1;
+  while (true) {
+    sourcePhase = await runNightlyScheduler({
+      workSource: {
+        readSnapshot() {
+          if (initial !== null) {
+            const snapshot = initial;
+            initial = null;
+            return Promise.resolve(snapshot);
+          }
+          return input.adapter.readSnapshot();
+        },
       },
-    },
-    handlerRegistry: createRuntimeAdapterHandlerRegistry(input.adapter),
-    options: {
-      maxConcurrentNetworkJobs:
-        input.options.existingCatalogOnly
-          ? input.options.maxConcurrency
-          : 1,
-      maxDispatches: input.options.existingCatalogOnly
-        ? input.options.existingCatalogMaintenanceOnly
-          ? MAINTENANCE_DISPATCH_QUANTUM
-          : input.options.maxDispatches
-        : SOURCE_CAMPAIGN_MAX_DISPATCHES,
-      now: input.now,
-      sleep: input.sleep,
-      deadlineAtMs: input.deadlineAtMs,
-      minimumSettlementReserveMs: input.options.existingCatalogMaintenanceOnly
-        ? MAINTENANCE_MINIMUM_SETTLEMENT_RESERVE_MS
-        : DIRECT_SOURCE_MINIMUM_SETTLEMENT_RESERVE_MS,
-      minimumSettlementReserveForCandidateMs:
-        input.options.existingCatalogMaintenanceOnly
-          ? maintenancePreparationSettlementReserveMs
-          : sourceAcquisitionSettlementReserveMs,
-      onProgress: input.onProgress === undefined
+      handlerRegistry: createRuntimeAdapterHandlerRegistry(input.adapter),
+      options: {
+        maxConcurrentNetworkJobs:
+          input.options.existingCatalogOnly
+            ? input.options.maxConcurrency
+            : 1,
+        maxDispatches: input.options.existingCatalogOnly
+          ? input.options.existingCatalogMaintenanceOnly
+            ? MAINTENANCE_DISPATCH_QUANTUM - (existingCatalogCombined?.dispatched ?? 0)
+            : input.options.maxDispatches - (existingCatalogCombined?.dispatched ?? 0)
+          : SOURCE_CAMPAIGN_MAX_DISPATCHES,
+        now: input.now,
+        sleep: input.sleep,
+        deadlineAtMs: input.deadlineAtMs,
+        minimumSettlementReserveMs: input.options.existingCatalogMaintenanceOnly
+          ? MAINTENANCE_MINIMUM_SETTLEMENT_RESERVE_MS
+          : DIRECT_SOURCE_MINIMUM_SETTLEMENT_RESERVE_MS,
+        minimumSettlementReserveForCandidateMs:
+          input.options.existingCatalogMaintenanceOnly
+            ? maintenancePreparationSettlementReserveMs
+            : sourceAcquisitionSettlementReserveMs,
+        onProgress: input.onProgress === undefined
+          ? undefined
+          : (event) => {
+              const enriched = Object.freeze({ ...event, quantumAttempt: existingCatalogQuantum });
+              if (event.phase === "terminal") sourceTerminalProgress = enriched;
+              else input.onProgress!(enriched);
+            },
+        ...(input.options.existingCatalogOnly ? {
+          preparationScope: existingCatalogPreparationScope,
+        } : {
+          sourceCampaignPolicies: sourceCampaignPolicies.map((policy) => Object.freeze({
+            sourceId: policy.sourceId,
+            dependencies: policy.dependencies,
+            terminalDependencies: policy.terminalDependencies,
+          })),
+        }),
+      },
+      telemetry: input.telemetry,
+      telemetryContext: input.campaignId === null
         ? undefined
-        : (event) => {
-            const enriched = Object.freeze({ ...event, quantumAttempt: 1 });
-            if (event.phase === "terminal") sourceTerminalProgress = enriched;
-            else input.onProgress!(enriched);
-          },
-      ...(input.options.existingCatalogOnly ? {
-        preparationScope: existingCatalogPreparationScope,
-      } : {
-        sourceCampaignPolicies: sourceCampaignPolicies.map((policy) => Object.freeze({
-          sourceId: policy.sourceId,
-          dependencies: policy.dependencies,
-          terminalDependencies: policy.terminalDependencies,
-        })),
-      }),
-    },
-    telemetry: input.telemetry,
-    telemetryContext: input.campaignId === null
-      ? undefined
-      : { campaignId: input.campaignId },
-    strategy: input.options.performance?.strategy,
-    signal: input.signal,
-  });
-  if (input.options.existingCatalogOnly) {
-    const existingCatalogPhase = !input.options.existingCatalogMaintenanceOnly &&
-        (sourcePhase.classification === "clean_empty" ||
-          sourcePhase.classification === "deterministic_terminal") &&
-        sourcePhase.coreProgress.remaining === 0 &&
-        sourcePhase.maintenanceProgress.remaining > 0
-      ? Object.freeze({
-          ...sourcePhase,
-          classification: "core_complete_maintenance_deferred" as const,
-        })
-      : sourcePhase;
-    if (sourceTerminalProgress !== null) input.onProgress?.(sourceTerminalProgress);
-    return existingCatalogPhase;
+        : { campaignId: input.campaignId },
+      strategy: input.options.performance?.strategy,
+      signal: input.signal,
+    });
+    if (input.options.existingCatalogOnly) {
+      if (input.options.existingCatalogMaintenanceOnly && sourcePhase.coreProgress.remaining > 0 &&
+        (sourcePhase.classification === "clean_empty" || sourcePhase.classification === "deterministic_terminal")) {
+        sourcePhase = Object.freeze({ ...sourcePhase, classification: "no_progress" as const,
+          tailReasonCodes: Object.freeze([...sourcePhase.tailReasonCodes, "source_release_freshness_core_work_pending"]) });
+      }
+      if (prospectiveFinalPreparationBoundary(sourcePhase)) {
+        const priorTerminalProgress: SchedulerProgressEvent | null = sourceTerminalProgress;
+        sourceTerminalProgress = null;
+        const freshness = await reconcileFinalReleaseFreshness(input, sourcePhase);
+        sourcePhase = freshness.result;
+        if (prospectiveFinalPreparationBoundary(sourcePhase)) sourceTerminalProgress = priorTerminalProgress;
+        if (freshness.snapshot !== null) {
+          initial = freshness.snapshot;
+          existingCatalogCombined = existingCatalogCombined === null
+            ? sourcePhase : combineSchedulerPhases(existingCatalogCombined, sourcePhase);
+          if (!input.options.existingCatalogMaintenanceOnly &&
+            sourcePhase.coreProgress.remaining === 0 && sourcePhase.maintenanceProgress.remaining > 0) {
+            return maintenanceDeferredResult(existingCatalogCombined, true);
+          }
+          if (input.options.existingCatalogMaintenanceOnly && sourcePhase.coreProgress.remaining > 0) {
+            return Object.freeze({ ...existingCatalogCombined, classification: "no_progress" as const,
+              tailReasonCodes: Object.freeze([...existingCatalogCombined.tailReasonCodes, "source_release_freshness_core_work_pending"]) });
+          }
+          const budget = input.options.existingCatalogMaintenanceOnly ? MAINTENANCE_DISPATCH_QUANTUM : input.options.maxDispatches;
+          if (existingCatalogCombined.dispatched >= budget) {
+            return Object.freeze({ ...existingCatalogCombined, classification: "bounded_quantum_exhausted" as const });
+          }
+          const continuation = decideOptimizedPreparationContinuation({
+            result: sourcePhase, state: existingCatalogContinuation,
+            nowMs: (input.now?.() ?? new Date()).getTime(), deadlineMs: input.deadlineAtMs,
+            minimumSettlementReserveMs: input.options.existingCatalogMaintenanceOnly
+              ? MAINTENANCE_MINIMUM_SETTLEMENT_RESERVE_MS : CORE_PREPARATION_MINIMUM_SETTLEMENT_RESERVE_MS,
+          });
+          if (!continuation.continue) {
+            return terminalizeOptimizedPreparationResult(existingCatalogCombined,
+              continuation.terminalReasonCode ?? "source_release_freshness_pending");
+          }
+          existingCatalogContinuation = continuation.state;
+          if (continuation.delayMs > 0) await (input.sleep ?? sleep)(continuation.delayMs);
+          existingCatalogQuantum += 1;
+          continue;
+        }
+      }
+      const existingCatalogPhase = !input.options.existingCatalogMaintenanceOnly &&
+          (sourcePhase.classification === "clean_empty" ||
+            sourcePhase.classification === "deterministic_terminal") &&
+          sourcePhase.coreProgress.remaining === 0 &&
+          sourcePhase.maintenanceProgress.remaining > 0
+        ? Object.freeze({
+            ...sourcePhase,
+            classification: "core_complete_maintenance_deferred" as const,
+          })
+        : sourcePhase;
+      if (sourceTerminalProgress !== null) input.onProgress?.(sourceTerminalProgress);
+      return existingCatalogCombined === null ? existingCatalogPhase : combineSchedulerPhases(existingCatalogCombined, existingCatalogPhase);
+    }
+    break;
   }
   if (
     !exactTerminalSourceVector(sourcePhase.sourceOutcomes, sourceCampaignPolicies.map((policy) => policy.sourceId))
@@ -1974,10 +2123,11 @@ async function runAdapterScheduler(input: {
   let quantumAttempt = 2;
   while (true) {
     const currentQuantumAttempt = quantumAttempt;
+    let preparationTerminalProgress: SchedulerProgressEvent | null = null;
     const minimumSettlementReserveMs = preparationScope === "core"
       ? CORE_PREPARATION_MINIMUM_SETTLEMENT_RESERVE_MS
       : MAINTENANCE_MINIMUM_SETTLEMENT_RESERVE_MS;
-    const preparationPhase = await runNightlyScheduler({
+    let preparationPhase = await runNightlyScheduler({
       workSource: {
         readSnapshot() {
           if (preparationSnapshot !== null) {
@@ -2007,14 +2157,18 @@ async function runAdapterScheduler(input: {
         preparationScope,
         onProgress: input.onProgress === undefined
           ? undefined
-          : (event) => input.onProgress!(Object.freeze({
+          : (event) => {
+            const enriched = Object.freeze({
               ...event,
               attemptedSourceCount: sourcePhase.sourceOutcomes.length,
               terminalSourceCount: sourcePhase.sourceOutcomes.length,
               knownSourceCount: sourcePhase.sourceOutcomes.length,
               quantumAttempt: currentQuantumAttempt,
               sourceOutcomes: sourcePhase.sourceOutcomes,
-            })),
+            });
+            if (event.phase === "terminal") preparationTerminalProgress = enriched;
+            else input.onProgress!(enriched);
+          },
       },
       telemetry: input.telemetry,
       telemetryContext: input.campaignId === null
@@ -2076,6 +2230,25 @@ async function runAdapterScheduler(input: {
       });
       quantumAttempt += 1;
       continue;
+    }
+    if (prospectiveFinalPreparationBoundary(preparationPhase)) {
+      const freshness = await reconcileFinalReleaseFreshness(input, preparationPhase);
+      preparationPhase = freshness.result;
+      if (freshness.snapshot === null) {
+        if (prospectiveFinalPreparationBoundary(preparationPhase) && preparationTerminalProgress !== null) {
+          input.onProgress?.(preparationTerminalProgress);
+        }
+        return combineSchedulerPhases(combinedResult, preparationPhase);
+      }
+      if (preparationPhase.coreProgress.remaining > 0) {
+        preparationScope = "core";
+        input.adapter.setPreparationScope("core");
+        preparationSnapshot = await input.adapter.readSnapshot();
+      } else {
+        preparationSnapshot = freshness.snapshot;
+      }
+    } else if (preparationTerminalProgress !== null) {
+      input.onProgress?.(preparationTerminalProgress);
     }
     const continuationNowMs = (input.now?.() ?? new Date()).getTime();
     const continuation = decideOptimizedPreparationContinuation({

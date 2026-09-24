@@ -25,7 +25,13 @@ import { readCurrentProjectionContracts } from
   "../pipeline/projection-contracts";
 import { isSourceInventoryTraversalPauseMessage } from
   "../pipeline/traversal-page-errors";
-import { reconcileProjectedSourceRelease } from "../pipeline/source-release-state";
+import {
+  computeSourceReleaseInput,
+  readProjectedSourceReleaseEvidence,
+  readSourceReleaseGenerationVector,
+  readSourceReleaseState,
+  reconcileProjectedSourceRelease,
+} from "../pipeline/source-release-state";
 import {
   checkSourceAccessEligibility,
   inspectSourceAccessStates,
@@ -77,7 +83,7 @@ import {
   type SchedulerVerifiedSourceBoundary,
   type SchedulerWorkOutcome,
 } from "./types";
-import { LOCAL_SCHEDULER_SOURCE_ID } from "./runtime-adapter";
+import { LOCAL_SCHEDULER_SOURCE_ID, type SourceReleaseFreshnessResult } from "./runtime-adapter";
 import {
   SCHEDULED_SOURCE_QUANTUM_ACQUISITION_WINDOW_MS,
   SCHEDULED_SOURCE_QUANTUM_DISCOVERY_LEASE_MS,
@@ -627,8 +633,8 @@ export async function reserveNightlySchedulerCandidate(input: {
       acquisitionClaim: null,
     });
   }
-  const policy = requirePolicy(input.candidate);
   if (input.candidate.kind === "source_acquisition") {
+    const policy = requirePolicy(input.candidate);
     const sourceInput = requireSourceInput(input.candidate);
     const expectation = await sourceReservationExpectation(input.candidate);
     const generation = await readSourceAcquisitionGeneration(input.database, policy.sourceId);
@@ -730,6 +736,8 @@ export async function reserveNightlySchedulerCandidate(input: {
 
     });
   }
+  if (input.candidate.sourceId !== LOCAL_SCHEDULER_SOURCE_ID ||
+      input.candidate.stage !== "source_release") requirePolicy(input.candidate);
   const item = requireWorkItem(input.candidate);
   if (
     item.subjectType === "listing" &&
@@ -784,8 +792,9 @@ export async function reserveNightlySchedulerCandidate(input: {
   return Object.freeze({
     reservationId: `work:${ownerHash}`,
     candidateId: input.candidate.id,
-    sourceId: policy.sourceId,
-    laneKey: input.candidate.networkLanes[0]!,
+    sourceId: input.candidate.sourceId,
+    laneKey: input.candidate.sourceId === LOCAL_SCHEDULER_SOURCE_ID
+      ? item.laneKey : input.candidate.networkLanes[0]!,
     inputRevision: claimed.revision,
     expiresAt,
     queueClaim: seedClaim,
@@ -1981,17 +1990,33 @@ export async function commitNightlySchedulerCandidate(input: {
     });
   }
   if (input.candidate.stage === "source_release") {
+    const item = requireWorkItem(input.candidate);
+    let sourceId = item.sourceId!;
+    if (input.candidate.sourceId === LOCAL_SCHEDULER_SOURCE_ID) {
+      const current = await readExactWorkIdentity(input.database, item);
+      const claim = requiredQueueClaim(input.reservation);
+      if (current === null || current.sourceId !== sourceId ||
+          current.subjectType !== "source" || current.subjectId !== sourceId ||
+          current.listingId !== null || current.laneKey !== input.reservation.laneKey ||
+          !sameWorkRevision(current, item) || current.leaseOwner !== claim.owner ||
+          current.claimedInputHash !== claim.inputHash || current.claimedRevision !== claim.revision ||
+          current.leaseExpiresAt !== input.reservation.expiresAt ||
+          Date.parse(current.leaseExpiresAt) <= now.getTime()) {
+        throw priorHeadError("pipeline_work_claim_missed");
+      }
+      sourceId = current.sourceId;
+    }
     const releaseStartedAt = performance.now();
     const release = await reconcileProjectedSourceRelease({
       database: input.database,
-      sourceId: input.candidate.sourceId,
+      sourceId,
       now,
     });
     const releaseDurationMs = performance.now() - releaseStartedAt;
     input.telemetry?.record({
       context: {
         ...input.telemetryContext,
-        sourceId: input.candidate.sourceId,
+        sourceId,
         coverageMode: release.state.coverageMode,
       },
       details: {
@@ -2006,7 +2031,7 @@ export async function commitNightlySchedulerCandidate(input: {
     input.telemetry?.record({
       context: {
         ...input.telemetryContext,
-        sourceId: input.candidate.sourceId,
+        sourceId,
         coverageMode: release.state.coverageMode,
       },
       details: {
@@ -3417,6 +3442,88 @@ async function executeProjectionCandidate(input: {
   });
 }
 
+/** Final preparation boundary: compare canonical inputs, then enqueue normal work. */
+export async function reconcileNightlySourceReleaseFreshness(input: {
+  readonly database: D1Database;
+  readonly now?: Date;
+}): Promise<SourceReleaseFreshnessResult> {
+  const now = validDate(input.now ?? new Date(), "release freshness time");
+  const checkedSourceIds: string[] = [];
+  const queuedSourceIds: string[] = [];
+  const pending = (): SourceReleaseFreshnessResult => ({
+    status: "upstream_work_pending", checkedSourceIds, queuedSourceIds,
+  });
+  if (await releaseFreshnessHasUpstreamWork(input.database, now)) return pending();
+  const heads = await readReleaseFreshnessHeads(input.database);
+  const vectors = new Map<string, string>();
+  const staleSourceIds: string[] = [];
+  for (const { source_id: sourceId } of heads) {
+    const releaseInput = await computeSourceReleaseInput(
+      await readProjectedSourceReleaseEvidence({ database: input.database, sourceId }),
+    );
+    const state = await readSourceReleaseState(input.database, sourceId);
+    checkedSourceIds.push(sourceId);
+    vectors.set(sourceId, releaseInput.generationVectorHash);
+    if (!state || state.state === "dirty" || state.releaseInputHash !== releaseInput.releaseInputHash) {
+      staleSourceIds.push(sourceId);
+    }
+  }
+  if (await releaseFreshnessHasUpstreamWork(input.database, now)) return pending();
+  for (const sourceId of staleSourceIds) {
+    if (await releaseFreshnessHasUpstreamWork(input.database, now)) return pending();
+    await enqueueSourceReleaseWork(input.database, now, sourceId);
+    queuedSourceIds.push(sourceId);
+  }
+  // A writer may have finished during the canonical scan. Its head or relevant
+  // generation change still prevents this invocation from claiming settlement.
+  for (const sourceId of checkedSourceIds) {
+    const current = await readSourceReleaseGenerationVector({ database: input.database, sourceId });
+    if (current.generationVectorHash !== vectors.get(sourceId)) return pending();
+  }
+  const currentHeads = await readReleaseFreshnessHeads(input.database);
+  if (JSON.stringify(currentHeads) !== JSON.stringify(heads)) return pending();
+  const queued = await input.database.prepare(`
+    SELECT DISTINCT source_id FROM pipeline_work_items
+    WHERE stage = 'source_release' ORDER BY source_id LIMIT 33
+  `).all<{ source_id: string }>();
+  if ((queued.results?.length ?? 0) > 32) {
+    throw new RangeError("release freshness queue exceeded 32 sources");
+  }
+  const pendingSourceIds = (queued.results ?? []).map((row) => row.source_id);
+  if (await releaseFreshnessHasUpstreamWork(input.database, now)) return pending();
+  return {
+    status: pendingSourceIds.length > 0 ? "queued" : "settled",
+    checkedSourceIds,
+    queuedSourceIds: pendingSourceIds,
+  };
+}
+
+async function readReleaseFreshnessHeads(database: D1Database) {
+  const result = await database.prepare(`
+    SELECT source_id, inventory_run_id FROM source_inventory_publication_heads
+    ORDER BY source_id LIMIT 33
+  `).all<{ source_id: string; inventory_run_id: string }>();
+  const heads = result.results ?? [];
+  if (heads.length > 32) throw new RangeError("release freshness exceeded 32 published sources");
+  return heads;
+}
+
+async function releaseFreshnessHasUpstreamWork(database: D1Database, now: Date): Promise<boolean> {
+  const row = await database.prepare(`
+    SELECT (
+      EXISTS (SELECT 1 FROM pipeline_work_items WHERE stage != 'source_release'
+        OR (lease_owner IS NOT NULL AND lease_expires_at > ?))
+      OR EXISTS (SELECT 1 FROM pipeline_run_lease WHERE expires_at > ?)
+      OR EXISTS (SELECT 1 FROM source_acquisition_reservations
+        WHERE state IN ('reserved', 'acquired') AND expires_at > ?)
+      OR EXISTS (SELECT 1 FROM discovery_runs WHERE status IN ('queued', 'running'))
+      OR EXISTS (SELECT 1 FROM source_runs WHERE status IN ('queued', 'running'))
+      OR EXISTS (SELECT 1 FROM enrichment_runs WHERE status = 'running')
+    ) AS pending
+  `).bind(now.toISOString(), now.toISOString(), now.toISOString()).first<{ pending: number }>();
+  return row?.pending !== 0;
+}
+
 export async function enqueueProjectedSourceReleaseWork(
   database: D1Database,
   now: Date,
@@ -3435,61 +3542,71 @@ export async function enqueueProjectedSourceReleaseWork(
   ])].sort();
   if (sourceIds.length > 32) throw new RangeError("projection release fan-out exceeded 32 sources");
   for (const sourceId of sourceIds) {
-    const rows: Array<{
+    await enqueueSourceReleaseWork(database, now, sourceId);
+  }
+}
+
+async function enqueueSourceReleaseWork(
+  database: D1Database,
+  now: Date,
+  sourceId: string,
+): Promise<void> {
+  const rows: Array<{
+    listing_id: string;
+    source_release_work_input_hash: string;
+  }> = [];
+  let afterListingId: string | null = null;
+  for (;;) {
+    const page: D1Result<{
       listing_id: string;
       source_release_work_input_hash: string;
-    }> = [];
-    let afterListingId: string | null = null;
-    for (;;) {
-      const page: D1Result<{
-        listing_id: string;
-        source_release_work_input_hash: string;
-      }> = await database.prepare(`
-        SELECT listing_id, source_release_work_input_hash
-        FROM listing_current_pipeline_state
-        WHERE source_id = ? AND (? IS NULL OR listing_id > ?)
-        ORDER BY listing_id
-        LIMIT ?
-      `).bind(
-        sourceId,
-        afterListingId,
-        afterListingId,
-        RELEASE_FANOUT_BATCH_SIZE,
-      ).all<{
-        listing_id: string;
-        source_release_work_input_hash: string;
-      }>();
-      const pageRows: Array<{
-        listing_id: string;
-        source_release_work_input_hash: string;
-      }> = page.results ?? [];
-      rows.push(...pageRows);
-      if (rows.length > MAX_RELEASE_FANOUT_ROWS) {
-        throw new RangeError(
-          `source release fan-out exceeded ${MAX_RELEASE_FANOUT_ROWS} listings for ${sourceId}`,
-        );
-      }
-      if (pageRows.length < RELEASE_FANOUT_BATCH_SIZE) break;
-      afterListingId = pageRows.at(-1)!.listing_id;
+    }> = await database.prepare(`
+      SELECT listing_id, source_release_work_input_hash
+      FROM listing_current_pipeline_state
+      WHERE source_id = ? AND (? IS NULL OR listing_id > ?)
+      ORDER BY listing_id
+      LIMIT ?
+    `).bind(
+      sourceId,
+      afterListingId,
+      afterListingId,
+      RELEASE_FANOUT_BATCH_SIZE,
+    ).all<{
+      listing_id: string;
+      source_release_work_input_hash: string;
+    }>();
+    const pageRows: Array<{
+      listing_id: string;
+      source_release_work_input_hash: string;
+    }> = page.results ?? [];
+    rows.push(...pageRows);
+    if (rows.length > MAX_RELEASE_FANOUT_ROWS) {
+      throw new RangeError(
+        `source release fan-out exceeded ${MAX_RELEASE_FANOUT_ROWS} listings for ${sourceId}`,
+      );
     }
-    await coalescePipelineWorkItem({
-      database,
-      stage: "source_release",
-      subject: { type: "source", id: sourceId },
-      laneKey: `source-release:${sourceId}`,
-      inputHash: await hashCanonicalJson({
-        version: NIGHTLY_SCHEDULER_RUNTIME_VERSION,
-        sourceId,
-        listings: rows.map((row) => [
-          row.listing_id,
-          row.source_release_work_input_hash,
-        ]),
-      }),
-      priority: 30,
-      reasonCode: "projection_source_release_changed",
-      now,
-    });
+    if (pageRows.length < RELEASE_FANOUT_BATCH_SIZE) break;
+    afterListingId = pageRows.at(-1)!.listing_id;
   }
+  const { generationVectorHash } = await readSourceReleaseGenerationVector({ database, sourceId });
+  await coalescePipelineWorkItem({
+    database,
+    stage: "source_release",
+    subject: { type: "source", id: sourceId },
+    laneKey: `source-release:${sourceId}`,
+    inputHash: await hashCanonicalJson({
+      version: NIGHTLY_SCHEDULER_RUNTIME_VERSION,
+      sourceId,
+      generationVectorHash,
+      listings: rows.map((row) => [
+        row.listing_id,
+        row.source_release_work_input_hash,
+      ]),
+    }),
+    priority: 30,
+    reasonCode: "projection_source_release_changed",
+    now,
+  });
 }
 
 async function exactWorkItemExists(
@@ -4337,10 +4454,17 @@ function requireWorkItem(candidate: SchedulerCandidate): PipelineWorkItem {
       (
         candidate.sourceId === LOCAL_SCHEDULER_SOURCE_ID
           ? candidate.workItem.sourceId !== null &&
-            !PROJECTION_STAGE_SET.has(candidate.workItem.stage)
+            !PROJECTION_STAGE_SET.has(candidate.workItem.stage) &&
+            candidate.workItem.stage !== "source_release"
           : candidate.workItem.sourceId !== candidate.sourceId
       ) ||
-      candidate.workItem.stage !== candidate.stage) {
+      candidate.workItem.stage !== candidate.stage ||
+      (candidate.stage === "source_release" && (
+        candidate.workItem.sourceId === null ||
+        candidate.workItem.subjectType !== "source" ||
+        candidate.workItem.subjectId !== candidate.workItem.sourceId ||
+        candidate.workItem.listingId !== null
+      ))) {
     throw priorHeadError("pipeline_work_identity_invalid");
   }
   return candidate.workItem;
@@ -4464,7 +4588,7 @@ function localPreparationCandidate(item: PipelineWorkItem, index: number): Sched
     kind: "preparation",
     sourceId: LOCAL_SCHEDULER_SOURCE_ID,
     stage: item.stage,
-    // Source-neutral projection work is a local canonical mutation. Its
+    // Projection and release work can use the local canonical mutation path. Its
     // durable lane key remains on the work item/reservation, but it must not
     // consume or require a source network lane.
     networkLanes: Object.freeze([]),

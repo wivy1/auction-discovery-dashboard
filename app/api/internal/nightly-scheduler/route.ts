@@ -39,6 +39,7 @@ import {
   commitNightlySchedulerCandidate,
   readNightlySchedulerSnapshot,
   reconcileDetachedNightlySchedulerCallback,
+  reconcileNightlySourceReleaseFreshness,
   reserveNightlySchedulerCandidate,
   validateNightlySchedulerAcquisition,
 } from "../../../../lib/scheduler/runtime-service";
@@ -64,6 +65,7 @@ const ACTIONS = new Set<NightlySchedulerRouteAction>([
   "abort_before_callback",
   "reconcile_callback",
   "transition_to_preparation",
+  "reconcile_release_freshness",
   "record_execution_evidence",
 ]);
 
@@ -247,6 +249,11 @@ export async function POST(request: Request) {
         completedAt: payload.completedAt,
       });
       schedulerRuntimeAuthorizationRegistry.retire(authorization.token);
+    } else if (action === "reconcile_release_freshness") {
+      if (authorization.binding.includeSourceAcquisitions) throw invalidAuthorization();
+      const database = runtimeDatabase();
+      await ensureDatabase(database);
+      result = await reconcileNightlySourceReleaseFreshness({ database });
     } else if (action === "transition_to_preparation") {
       if (!authorization.binding.includeSourceAcquisitions) {
         throw invalidAuthorization();
@@ -466,6 +473,9 @@ function invalidCoverageMode(): never {
 }
 
 function actionAllowedKeys(action: NightlySchedulerRouteAction): ReadonlySet<string> {
+  if (action === "reconcile_release_freshness") {
+    return new Set(["schemaVersion", "action"]);
+  }
   if (action === "record_execution_evidence") {
     return new Set([
       "schemaVersion",
