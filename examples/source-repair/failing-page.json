@@ -1,0 +1,7 @@
+{
+  "total": 2,
+  "items": [
+    { "id": "item-1", "title": "Synthetic bench instrument", "state": "current", "description": "Example instrument text." },
+    { "id": "item-2", "title": "Synthetic sample cooler", "state": "current", "description": null }
+  ]
+}

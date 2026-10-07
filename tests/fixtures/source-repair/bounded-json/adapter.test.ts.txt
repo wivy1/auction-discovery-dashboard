@@ -1,0 +1,31 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import original from "./fixture.json";
+import { adapter } from "./adapter";
+import { invokeSourceParser } from "../../lib/sources/parser-errors";
+
+const page = (body: unknown) => ({ url: "https://example.invalid/inventory.json", body: JSON.stringify(body), fetchedAt: "2026-01-01T00:00:00.000Z", contentType: "application/json" });
+const parse = (body: unknown) => invokeSourceParser("bounded_json", () => adapter.parseDiscoveryBatch!(page(body)));
+test("immutable independent bounds are available before nullable or missing text mapping", () => {
+  for (const value of [null, undefined]) {
+    const body: { total: number; items: Array<Record<string, unknown>> } = structuredClone(original);
+    if (value === undefined) delete body.items[0]!.description; else body.items[0]!.description = value;
+    const plan = adapter.planInventoryTraversal!(page(body))!;
+    assert.equal(plan.expectedListings, 2);
+    assert.deepEqual(plan.pages[0], { key: "independent-two-member-page", request: { kind: "api", url: "https://example.invalid/inventory.json" }, minimumListings: 2, maximumListings: 2, inventoryMember: true, reviewCandidate: true });
+  }
+});
+test("immutable text and source identity controls preserve missing and malformed rejection", () => {
+  assert.equal(parse(original).length, 2);
+  const empty = structuredClone(original); empty.items[0]!.description = ""; assert.equal(parse(empty)[0]!.detail!.rawDescription, "");
+  for (const value of [undefined, 7, {}, []]) {
+    const body: { total: number; items: Array<Record<string, unknown>> } = structuredClone(original);
+    if (value === undefined) delete body.items[0]!.description; else body.items[0]!.description = value;
+    assert.throws(() => parse(body), { name: "SourceAdapterError", message: "Bounded listing description must be a string." });
+  }
+  for (const [field, value] of [["id", "wrong"], ["title", ""], ["state", "ended"]] as const) {
+    const body: { total: number; items: Array<Record<string, unknown>> } = structuredClone(original); body.items[0]![field] = value; assert.throws(() => parse(body));
+  }
+  const duplicate = structuredClone(original); duplicate.items[1]!.id = "item-1"; assert.throws(() => parse(duplicate));
+  const count = structuredClone(original); count.total = 3; assert.throws(() => parse(count)); assert.throws(() => adapter.planInventoryTraversal!(page(count)));
+});

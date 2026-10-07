@@ -1,0 +1,30 @@
+import { createJsonApiSource } from "../../lib/sources/json-api";
+import type { GenericListingFacts, GenericMappingContext } from "../../lib/sources/generic";
+import type { SourceAdapter, SourcePage } from "../../lib/sources/types";
+
+function requiredText(value: unknown, field: string): string {
+  if (typeof value !== "string") throw new TypeError(`Bounded listing ${field} must be a string.`);
+  return value;
+}
+function normalizeListing(listing: Readonly<Record<string, unknown>>, _context: GenericMappingContext): GenericListingFacts {
+  const id = requiredText(listing.id, "id");
+  if (!/^item-[1-9][0-9]*$/u.test(id)) throw new TypeError("Bounded listing id is invalid.");
+  const title = requiredText(listing.title, "title");
+  const state = requiredText(listing.state, "state");
+  if (state !== "current") throw new TypeError("Bounded listing state must be current.");
+  const description = requiredText(listing.description, "description");
+  return { sourceListingId: id, sourceUrl: `https://example.invalid/items/${id}`, title, currentState: "current",
+    detail: { rawDescription: description, cleanDescription: description, priceAtScrape: {}, auctionEndsAt: null, seller: null, images: [] } };
+}
+const original = createJsonApiSource({ id: "bounded_json", displayName: "Synthetic independent bounds fixture", baseUrl: "https://example.invalid/",
+  inventoryUrl: "https://example.invalid/inventory.json", itemsPath: ["items"], totalPath: ["total"], maximumListings: 4, inlineDetails: true,
+  mapListing: normalizeListing, requests: { allowedHosts: ["example.invalid"], minDelayMs: 1_000, maxRequestsPerRun: 1, timeoutMs: 1_000, maxRetries: 0, maxResponseBytes: 8_192 } });
+
+// This synthetic source declares one exact two-member page independently of text mapping.
+export const adapter: SourceAdapter = { ...original, planInventoryTraversal(page: SourcePage) {
+  const metadata = JSON.parse(page.body) as { total?: unknown; items?: unknown };
+  if (metadata.total !== 2 || !Array.isArray(metadata.items) || metadata.items.length !== 2) throw new TypeError("Bounded fixture metadata changed.");
+  return { fingerprint: "immutable-two-member-fixture-v1", inventoryCardinality: "exact", expectedListings: 2,
+    pages: [{ key: "independent-two-member-page", request: { kind: "api", url: "https://example.invalid/inventory.json" },
+      minimumListings: 2, maximumListings: 2, inventoryMember: true, reviewCandidate: true }] };
+} };

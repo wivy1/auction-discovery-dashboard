@@ -33,6 +33,7 @@ import {
 import { newListingSnapshotPolicy } from "../dashboard-new-listings";
 import { createPickupRouteAssessor } from "./route";
 import { collectGenericInventory } from "./generic-inventory";
+import { createSourceParserEvidenceCapture } from "./source-repair-evidence";
 import { readCurrentProjectionContracts } from "./projection-contracts";
 import { refreshOperationalProjectionListing } from "./operational-projection";
 import { throwIfDiscoveryRunCancelled, isDiscoveryRunCancelled, discoveryFailureSnapshotPolicy } from "./discovery-cancellation";
@@ -133,6 +134,7 @@ export async function runAuctionDiscovery(
       const adapter = sourceRegistry.get(manifest.id)!;
       const sourceRunId = await beginSourceRun(runId, manifest.id);
       const counters: SourceRunCounters = { stubsDiscovered: 0, skippedAlreadySeen: 0, detailsFetched: 0, accepted: 0, excluded: 0 };
+      const parserEvidence = createSourceParserEvidenceCapture(manifest.id);
       try {
         const grant = configuredSourceAccessGrant(manifest.id, enabled.has(manifest.id), mode === "canary");
         const access = evaluateSourceAccess(manifest, grant);
@@ -152,7 +154,7 @@ export async function runAuctionDiscovery(
         }
         let work: readonly SourceDiscoveredListing[] = [];
         if (mode !== "continuation") {
-          work = await collectGenericInventory(adapter, controller, { canary: mode === "canary", originPostalCode: origin.postalCode }, checkpoint);
+          work = await collectGenericInventory(adapter, controller, { canary: mode === "canary", originPostalCode: origin.postalCode }, checkpoint, parserEvidence);
           const ensured = await ensureListingStubs(runId, work.map(({ stub }) => stub));
           counters.stubsDiscovered = work.length;
           summary.discovered += work.length;
@@ -276,6 +278,7 @@ export async function runAuctionDiscovery(
         }
         await finishSourceRun(sourceRunId, "completed", counters);
       } catch (error) {
+        await parserEvidence.retain(error, { sourceRunId, observedAt: new Date().toISOString(), storage: env.STORAGE });
         const failure = directSourceAccessFailure(error);
         if (failure) await recordSourceDocumentAccessFailure({ database: env.DB, manifest, failure });
         await finishSourceRun(sourceRunId, "failed", counters, error);

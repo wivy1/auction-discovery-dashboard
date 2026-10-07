@@ -97,7 +97,7 @@ test("real dashboard selection and operator-ended state survive reload through t
     const address = server.httpServer!.address();
     assert.ok(address && typeof address !== "string");
     const origin = `http://127.0.0.1:${address.port}`;
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch({ headless: true, ...(process.env.PUBLIC_BROWSER_TEST_EXECUTABLE ? { executablePath: process.env.PUBLIC_BROWSER_TEST_EXECUTABLE } : {}) });
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, serviceWorkers: "block" });
     await context.route("**/*", async (route) => {
       const request = route.request();

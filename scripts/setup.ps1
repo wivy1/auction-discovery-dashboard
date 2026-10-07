@@ -14,4 +14,8 @@ if (-not (Test-Path -LiteralPath $localSourceConfig)) {
   # File.Copy with overwrite=false preserves a concurrent or existing local configuration.
   [IO.File]::Copy((Join-Path $ProjectRoot 'source-adapters.example.ts'), $localSourceConfig, $false)
 }
+$localRepairConfig = Join-Path $ProjectRoot 'source-repair.config.local.json'
+if (-not (Test-Path -LiteralPath $localRepairConfig)) {
+  [IO.File]::Copy((Join-Path $ProjectRoot 'source-repair.config.example.json'), $localRepairConfig, $false)
+}
 [Console]::Error.WriteLine('2/2: setup complete; open Auction Discovery.cmd')

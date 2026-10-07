@@ -1,5 +1,7 @@
 import type { SourceAdapter, SourceDiscoveredListing, SourceDiscoveryContext, SourcePage, SourceRequestController } from "../sources";
 import { SourceAdapterError } from "../sources/types";
+import { invokeSourceParser } from "../sources/parser-errors";
+import { createSourceParserEvidenceCapture } from "./source-repair-evidence";
 
 /** Parse and validate the complete bounded inventory before publishing any membership. */
 export async function collectGenericInventory(
@@ -7,6 +9,7 @@ export async function collectGenericInventory(
   controller: SourceRequestController,
   context: SourceDiscoveryContext,
   checkpoint: () => Promise<void>,
+  parserEvidence = createSourceParserEvidenceCapture(adapter.manifest.id),
 ): Promise<readonly SourceDiscoveredListing[]> {
   const requests = adapter.planDiscovery(context);
   if (requests.length === 0) throw new SourceAdapterError(adapter.manifest.id, "The inventory plan has no authoritative document");
@@ -15,13 +18,19 @@ export async function collectGenericInventory(
     await checkpoint();
     roots.push(await controller.fetchPage(request));
   }
-  const traversal = adapter.planInventoryTraversalBundle?.(roots) ??
-    (roots.length === 1 ? adapter.planInventoryTraversal?.(roots[0]!) : null);
+  // Bundle callbacks have no trustworthy single-page replay association.
+  const bundle = invokeSourceParser(adapter.manifest.id, () => adapter.planInventoryTraversalBundle?.(roots));
+  const traversal = bundle ?? (roots.length === 1
+    ? parserEvidence.run({ page: roots[0]!, operation: "plan_inventory" }, () => adapter.planInventoryTraversal?.(roots[0]!))
+    : null);
   const pages: SourcePage[] = [];
   const listings: SourceDiscoveredListing[] = [];
   const append = (page: SourcePage, planned?: NonNullable<typeof traversal>["pages"][number]) => {
-    const rows = adapter.parseDiscoveryBatch?.(page, planned) ??
-      adapter.parseDiscoveryPage(page).map((stub) => ({ stub }));
+    const rows = parserEvidence.run({ page, operation: "parse_page",
+      ...(traversal ? { expectedListings: traversal.expectedListings } : {}),
+      ...(planned ? { plannedPage: planned } : {}),
+    }, () => adapter.parseDiscoveryBatch?.(page, planned) ??
+      adapter.parseDiscoveryPage(page).map((stub) => ({ stub })));
     if (planned && (rows.length < planned.minimumListings || rows.length > planned.maximumListings)) {
       throw new SourceAdapterError(adapter.manifest.id, "Inventory page count differs from its declared bounds");
     }
@@ -36,12 +45,15 @@ export async function collectGenericInventory(
       const page = rootIndex >= 0 && !planned.revalidateAfterTraversal
         ? roots[rootIndex]!
         : await controller.fetchPage(planned.request);
-      if (adapter.validateInventoryTraversalPage?.(page, traversal.expectedListings, planned) === "replan_required") {
+      const validated = parserEvidence.run({ page, operation: "validate_page", expectedListings: traversal.expectedListings, plannedPage: planned },
+        () => adapter.validateInventoryTraversalPage?.(page, traversal.expectedListings, planned));
+      if (validated === "replan_required") {
         throw new SourceAdapterError(adapter.manifest.id, "Inventory changed during acquisition; the prior publication is retained");
       }
       append(page, planned);
     }
-    adapter.validateInventoryTraversalBundle?.(pages, traversal);
+    parserEvidence.clear();
+    invokeSourceParser(adapter.manifest.id, () => adapter.validateInventoryTraversalBundle?.(pages, traversal));
   } else {
     for (const page of roots) append(page);
   }

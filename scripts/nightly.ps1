@@ -68,6 +68,32 @@ $priorHeadPreservedBackoffSeconds = 60
 $existingRuntimeRecoverySeconds = 300
 $nonTtyHeartbeatSeconds = 30
 
+function Invoke-OptionalSourceRepair {
+  param([Collections.IDictionary]$Status, [bool]$HealthOnly)
+  if ($HealthOnly -or -not $Status -or [string]$Status['state'] -cne 'completed' -or
+      -not $Status['startedAt'] -or -not $Status['endedAt'] -or $env:SOURCE_REPAIR_ENABLED -eq '0') { return }
+  $previousExitCode = $global:LASTEXITCODE
+  try {
+    $idleOutput = @(& $NodeExe --import $NodeRuntimePreload (Join-Path $PSScriptRoot 'check-pipeline-idle.mjs'))
+    if ($LASTEXITCODE -ne 0 -or $idleOutput.Count -ne 1) { throw 'Repair ownership observation is unavailable.' }
+    $idle = $idleOutput[0] | ConvertFrom-Json -ErrorAction Stop
+    if ($idle.idle -isnot [bool] -or -not $idle.idle) { return }
+    foreach ($name in @('active', 'activeReservations', 'activeWorkClaims', 'orphanedRuns')) {
+      if ($name -notin @($idle.PSObject.Properties.Name) -or $idle.$name -isnot [Array] -or @($idle.$name).Count -ne 0) { return }
+    }
+    # CLI settings include .env.local; its default disabled state permits only
+    # bounded local diagnostics. Enabled inference rechecks ownership itself.
+    & $NodeExe --import $NodeRuntimePreload --import tsx `
+      (Join-Path $PSScriptRoot 'source-repair-sandbox.mts') run `
+      --since ([string]$Status['startedAt']) --until ([string]$Status['endedAt']) --limit 2 `
+      2>&1 | ForEach-Object { [Console]::Error.WriteLine("[source repair] $_") }
+  } catch {
+    [Console]::Error.WriteLine('[source repair] Optional proposal batch unavailable; discovery result preserved.')
+  } finally {
+    $global:LASTEXITCODE = $previousExitCode
+  }
+}
+
 function Get-CheckoutRuntimeRevision {
   $revisionScript = (Resolve-Path `
     (Join-Path $PSScriptRoot "runtime-revision.mts")).Path
@@ -2456,4 +2482,5 @@ try {
 } finally {
   if ($ownedDevProcess) { Stop-OwnedDashboard -Ownership $ownedDevProcess }
   if ($nightlyLock) { $nightlyLock.Dispose() }
+  Invoke-OptionalSourceRepair -Status $nightlyStatus -HealthOnly ([bool]$HealthCheckOnly)
 }

@@ -12,6 +12,7 @@ If you're like me, you manually refresh 20 surplus auction sites a few times eac
 
 Auction Discovery Dashboard:
 - Automatically scrapes all of your obscure auction sites.
+- Uses a local LLM on your machine to analyze failed discovery and prepare source-adapter repairs.
 - Enriches listings with manufacturer, model, equipment type, and condition, and lists all components of a batch lot.
 - Estimates driving time to the pickup locations.
 - Assigns a 0-100 interest score based upon your accumulated voting history (Interested vs. Not interested).
@@ -32,6 +33,10 @@ Run discovery manually or schedule it to run unattended, including overnight. Ea
 4. Extracts manufacturers, model numbers, equipment types, condition from listing text.
 5. Identifies single items and multi-item lots, records the stated lot contents.
 6. Assigns a 0-100 interest score to each listing based upon your voting history.
+
+### Repairing source adapters
+
+When source changes break discovery, a local LLM can analyze saved failure evidence and propose parser changes—for example, renamed or nested JSON fields, changed HTML text selectors, or text fields that now return null. Proposals are tested offline in a sandbox and require review before applying.
 
 ### Reviewing listings
 
@@ -93,7 +98,7 @@ The templates expect a complete inventory document. Paginated inventories need a
 
 ### Configuring local AI
 
-Listing enrichment and preference scoring require local AI models of your choosing. These features are optional; without the models, all discovered listings will show **Unrated**.
+Listing enrichment, source-adapter repair, and preference scoring require local AI models of your choosing. These features are optional; without the models, all discovered listings will show **Unrated**.
 
 #### Listing enrichment
 
@@ -117,6 +122,10 @@ OLLAMA_BASE_URL=http://localhost:11434
 ```
 
 Keep Ollama running and restart the launcher. This enables text enrichment. To use the smaller alternative, pull `qwen3.5:9b` and set `AI_TEXT_MODEL` to that exact name. Setup does not download models automatically.
+
+#### Source-adapter repair
+
+Source-adapter repair uses your installed local text model through Ollama. Configure the adapters and offline sandbox using the [source-repair guide](docs/source-repair.md).
 
 #### Preference scoring
 

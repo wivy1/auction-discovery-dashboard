@@ -1,6 +1,6 @@
 {
   "name": "auction-discovery",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -12,6 +12,7 @@
     "start": "vinext start",
     "test": "node --import ./scripts/node-runtime-preload.mjs scripts/test.mjs",
     "preference": "node --import ./scripts/node-runtime-preload.mjs --import tsx scripts/preference.mts",
+    "repair": "node --import ./scripts/node-runtime-preload.mjs --import tsx scripts/source-repair-sandbox.mts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint app db lib scripts worker build --ignore-pattern dist --ignore-pattern .wrangler",
     "browser:install": "node node_modules/playwright/cli.js install chromium"

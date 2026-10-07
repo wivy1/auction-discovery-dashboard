@@ -141,7 +141,7 @@ test("schedule identities are stable per checkout and isolated between installat
   } finally { cleanup(first); cleanup(second); }
 });
 
-test("setup installs the lockfile and bootstraps only an absent local source configuration", { skip: process.platform !== "win32" }, () => {
+test("setup installs the lockfile and bootstraps only absent local source and repair configurations", { skip: process.platform !== "win32" }, () => {
   const directory = fixture();
   try {
     for (const name of ["setup.ps1", "runtime.ps1"]) copyFileSync(resolve(root, "scripts", name), resolve(directory, "scripts", name));
@@ -149,14 +149,19 @@ test("setup installs the lockfile and bootstraps only an absent local source con
     mkdirSync(binaryDirectory);
     writeFileSync(resolve(binaryDirectory, "pnpm.cmd"), '@echo off\necho %*>>"%~dp0pnpm-arguments.txt"\nexit /b 0\n');
     writeFileSync(resolve(directory, "source-adapters.example.ts"), "export default [];\n");
+    copyFileSync(resolve(root, "source-repair.config.example.json"), resolve(directory, "source-repair.config.example.json"));
     const setup = () => execFileSync(powershell, [...args, "-File", resolve(directory, "scripts", "setup.ps1")], {
       encoding: "utf8", windowsHide: true, env: { ...process.env, PATH: `${binaryDirectory};${process.env.PATH}` },
     });
     setup();
     assert.equal(readFileSync(resolve(directory, "source-adapters.local.ts"), "utf8"), "export default [];\n");
+    assert.deepEqual(JSON.parse(readFileSync(resolve(directory, "source-repair.config.local.json"), "utf8")), { schemaVersion: "source-repair-config-v1", targets: [] });
     writeFileSync(resolve(directory, "source-adapters.local.ts"), "// operator configuration\nexport default [];\n");
+    const operatorRepairConfig = '{\n  "targets":[],\n  "schemaVersion":"source-repair-config-v1"\n}\n';
+    writeFileSync(resolve(directory, "source-repair.config.local.json"), operatorRepairConfig);
     setup();
     assert.equal(readFileSync(resolve(directory, "source-adapters.local.ts"), "utf8"), "// operator configuration\nexport default [];\n");
+    assert.equal(readFileSync(resolve(directory, "source-repair.config.local.json"), "utf8"), operatorRepairConfig);
     const invocations = readFileSync(resolve(binaryDirectory, "pnpm-arguments.txt"), "utf8").trim().split(/\r?\n/);
     assert.deepEqual(invocations, ["install --frozen-lockfile --store-dir .pnpm-store", "install --frozen-lockfile --store-dir .pnpm-store"]);
   } finally { cleanup(directory); }
