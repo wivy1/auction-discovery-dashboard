@@ -1716,6 +1716,15 @@ async function readCanonicalDashboardPayload(
           WHERE publication_head.source_id = src.id
           LIMIT 1
         ) AS publication_inventory_run_id,
+        COALESCE((
+          SELECT json_array_length(publication.publisher_lead_evidence_json)
+          FROM source_inventory_publication_heads publication_head
+          JOIN source_inventory_publications publication
+            ON publication.source_id = publication_head.source_id
+            AND publication.inventory_run_id = publication_head.inventory_run_id
+          WHERE publication_head.source_id = src.id
+          LIMIT 1
+        ), 0) AS event_lead_evidence_count,
         ${unresolvedAcceptanceCountSql("src.id")} AS unresolved_acceptance_count,
         sr.error_message AS error_message
       FROM auction_sources src
@@ -2491,6 +2500,7 @@ async function readCanonicalDashboardPayload(
       discovered: number(row.discovered),
       coverage: {
         catalog: number(row.cataloged),
+        eventLeadEvidenceCount: number(row.event_lead_evidence_count),
         proximityScope: sourceRouteHealth.scope,
         distanceComplete: sourceRouteHealth.completed,
         routeErrors: sourceRouteHealth.errors,

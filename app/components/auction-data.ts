@@ -298,6 +298,8 @@ export interface SourceStatus {
   discovered: number;
   coverage: {
     catalog: number;
+    /** Special event-lead evidence records in the current head, not a lead total. */
+    eventLeadEvidenceCount?: number;
     proximityScope: number;
     distanceComplete: number;
     routeErrors: number;

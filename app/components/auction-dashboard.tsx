@@ -3008,6 +3008,11 @@ function SettingsView({
                   {source.coverage.catalog.toLocaleString()} catalog
                   <small>latest {source.discovered.toLocaleString()}</small>
                 </strong>
+                {(source.coverage.eventLeadEvidenceCount ?? 0) > 0 ? (
+                  <small>
+                    {(source.coverage.eventLeadEvidenceCount ?? 0).toLocaleString()} event lead evidence records
+                  </small>
+                ) : null}
                 <small>
                   Proximity scope {source.coverage.proximityScope.toLocaleString()}/{source.coverage.catalog.toLocaleString()}
                   {" \u00b7 "}
