@@ -763,6 +763,7 @@ async function handleSourceAcquisitionRequest(
           upstreamCode: error.upstreamCode,
           upstreamError: error.upstreamError,
           upstreamDiagnostic: error.upstreamDiagnostic,
+          ...(error.failure === null ? {} : { failure: error.failure }),
           ...(error.accessReceipt === null ? {} : { accessReceipt: error.accessReceipt }),
           retryAfterMs: sourceAcquisitionRetryAfterMs(error),
         }, origin);

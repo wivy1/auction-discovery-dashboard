@@ -27,6 +27,8 @@ $ownedDevProcess = $null
 $nightlyLock = $null
 $nightlyStatus = $null
 $nightlyStatusPath = Join-Path $ProjectRoot ".wrangler\logs\nightly-status.json"
+$latestSourceDiscoveryPath = Join-Path $ProjectRoot ".wrangler\logs\latest-source-discovery.json"
+$sourceDiscoveryReceiptAttempted = $false
 $nightlyLockPath = Join-Path $ProjectRoot ".wrangler\logs\nightly.lock"
 $supervisorLockPath = Join-Path $ProjectRoot ".wrangler\logs\runtime-supervisor.lock"
 $runtimeRevisionSchema = "auction-discovery-runtime-revision-v1"
@@ -85,7 +87,7 @@ function Invoke-OptionalSourceRepair {
     # bounded local diagnostics. Enabled inference rechecks ownership itself.
     & $NodeExe --import $NodeRuntimePreload --import tsx `
       (Join-Path $PSScriptRoot 'source-repair-sandbox.mts') run `
-      --since ([string]$Status['startedAt']) --until ([string]$Status['endedAt']) --limit 2 `
+      --since ([string]$Status['startedAt']) --until ([string]$Status['endedAt']) --limit 2 --quiet `
       2>&1 | ForEach-Object { [Console]::Error.WriteLine("[source repair] $_") }
   } catch {
     [Console]::Error.WriteLine('[source repair] Optional proposal batch unavailable; discovery result preserved.')
@@ -898,6 +900,54 @@ function Assert-SourceOutcomeVector {
   }
 }
 
+function Write-LatestSourceDiscoveryReceipt {
+  param(
+    [Parameter(Mandatory = $true)][AllowEmptyCollection()]$SourceOutcomes,
+    [Parameter(Mandatory = $true)][ValidateRange(0, 10000)][int]$ExpectedSourceCount,
+    [string]$RecordedAt = ([DateTimeOffset]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"))
+  )
+  Assert-SourceOutcomeVector -SourceOutcomes $SourceOutcomes -ExpectedSourceCount $ExpectedSourceCount
+  $startedAt = [string]$script:nightlyStatus["startedAt"]
+  $revision = [string]$script:nightlyStatus["runtimeRevision"]
+  $parsedStart = [DateTimeOffset]::MinValue
+  $parsedRecorded = [DateTimeOffset]::MinValue
+  if (
+    $startedAt -notmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$' -or
+    $RecordedAt -notmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$' -or
+    -not [DateTimeOffset]::TryParse($startedAt, [ref]$parsedStart) -or
+    -not [DateTimeOffset]::TryParse($RecordedAt, [ref]$parsedRecorded) -or
+    $parsedStart.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ") -cne $startedAt -or
+    $parsedRecorded.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ") -cne $RecordedAt -or
+    $parsedRecorded -lt $parsedStart -or $revision -notmatch $runtimeRevisionPattern
+  ) { throw "The latest source discovery receipt has an invalid identity." }
+  $counts = [ordered]@{}
+  foreach ($name in $sourceOutcomeNames) {
+    $counts[$name] = @($SourceOutcomes | Where-Object { $_.outcome -eq $name }).Count
+  }
+  $receipt = [ordered]@{
+    schemaVersion = "auction-discovery-source-discovery-v1"
+    startedAt = $startedAt
+    recordedAt = $RecordedAt
+    runtimeRevision = $revision
+    sourceCount = $ExpectedSourceCount
+    sourceIds = @($SourceOutcomes | ForEach-Object { [string]$_.sourceId })
+    sourceOutcomes = @($SourceOutcomes)
+    sourceOutcomeCounts = $counts
+  }
+  $contents = ($receipt | ConvertTo-Json -Depth 6 -Compress) + "`n"
+  $encoding = New-Object System.Text.UTF8Encoding($false)
+  if ($encoding.GetByteCount($contents) -gt 64KB) {
+    throw "The latest source discovery receipt exceeded its size bound."
+  }
+  $temporaryPath = "$latestSourceDiscoveryPath.tmp.$PID.$([Guid]::NewGuid().ToString('N'))"
+  try {
+    [System.IO.File]::WriteAllText($temporaryPath, $contents, $encoding)
+    Move-Item -LiteralPath $temporaryPath -Destination $latestSourceDiscoveryPath -Force
+  } finally {
+    Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Set-NightlySourceOutcomes {
   param(
     [Parameter(Mandatory = $true)][AllowEmptyCollection()]$SourceOutcomes,
@@ -918,6 +968,15 @@ function Set-NightlySourceOutcomes {
   $script:nightlyStatus["sourceOutcomeCounts"] = $counts
   $script:nightlyStatus["campaignSourcesCompleted"] = $outcomes.Count
   $script:nightlyStatus["campaignSourcesTotal"] = $ExpectedSourceCount
+  if (-not $ExistingCatalogOnly -and $outcomes.Count -eq $ExpectedSourceCount -and
+      -not $script:sourceDiscoveryReceiptAttempted) {
+    $script:sourceDiscoveryReceiptAttempted = $true
+    try {
+      Write-LatestSourceDiscoveryReceipt -SourceOutcomes $outcomes -ExpectedSourceCount $ExpectedSourceCount
+    } catch {
+      Write-Warning "The latest source discovery receipt could not be saved; current discovery continues."
+    }
+  }
 }
 
 function Get-NightlySchedulerResult {

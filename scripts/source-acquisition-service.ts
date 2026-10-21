@@ -2,6 +2,12 @@ import type { LocalSourceRunSummary } from "../lib/sources/local-acquisition";
 import type { GenericSourceAcquisitionPlan } from "../lib/pipeline/source-acquisition";
 import { LOCAL_COMPANION_CAPABILITY_HEADER } from "../lib/local-companion";
 import { RUNTIME_REVISION_HEADER } from "../lib/runtime-revision";
+import {
+  SOURCE_ADAPTER_FAILURE_CODE,
+  SOURCE_ADAPTER_FAILURE_MESSAGE,
+  parseSourceAdapterFailureEnvelope,
+  type SourceAdapterFailureEnvelope,
+} from "../lib/sources/failure-envelope";
 import { BrowserCleanupError, captureGenericSourcePages } from "./source-browser-acquisition";
 
 export type LocalSourceAcquisitionMode = "canary" | "catalog" | "continuation" | "normal";
@@ -13,7 +19,8 @@ export class LocalSourceAcquisitionError extends Error {
   readonly upstreamDiagnostic = null;
   readonly accessReceipt = null;
   readonly retryAfterMs = null;
-  constructor(message: string, readonly status: number, readonly code: string, readonly sourceId: string | null = null) {
+  constructor(message: string, readonly status: number, readonly code: string, readonly sourceId: string | null = null,
+    readonly failure: SourceAdapterFailureEnvelope | null = null) {
     super(message);
     this.name = "LocalSourceAcquisitionError";
     this.upstreamCode = code;
@@ -77,9 +84,27 @@ async function callback<T>(input: Connection, payload: Record<string, unknown>):
       }
       text += decoder.decode();
     } finally { reader.releaseLock(); }
-    if (!response.ok) throw new LocalSourceAcquisitionError("Source callback rejected the acquisition", response.status, "source_callback_rejected", typeof payload.sourceId === "string" ? payload.sourceId : null);
+    if (!response.ok) {
+      const failure = retainedSourceAdapterFailure(text, payload, response.status);
+      if (failure !== null) throw failure;
+      throw new LocalSourceAcquisitionError("Source callback rejected the acquisition", response.status, "source_callback_rejected", typeof payload.sourceId === "string" ? payload.sourceId : null);
+    }
     return JSON.parse(text) as T;
   } finally { callbackDepth--; release(); }
+}
+
+function retainedSourceAdapterFailure(text: string, payload: Record<string, unknown>, status: number): LocalSourceAcquisitionError | null {
+  if (status !== 422 || !["plan", "commit"].includes(String(payload.action)) || typeof payload.sourceId !== "string") return null;
+  let value: unknown;
+  try { value = JSON.parse(text); } catch { return null; }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const body = value as Record<string, unknown>;
+  if (Object.keys(body).length !== 4 || Object.keys(body).some((key) => !["error", "code", "sourceId", "failure"].includes(key)) ||
+      body.error !== SOURCE_ADAPTER_FAILURE_MESSAGE || body.code !== SOURCE_ADAPTER_FAILURE_CODE || body.sourceId !== payload.sourceId) return null;
+  const failure = parseSourceAdapterFailureEnvelope(body.failure);
+  return failure === null ? null : new LocalSourceAcquisitionError(
+    SOURCE_ADAPTER_FAILURE_MESSAGE, status, SOURCE_ADAPTER_FAILURE_CODE, payload.sourceId, failure,
+  );
 }
 
 export async function runLocalSourceAcquisition(input: Connection & {

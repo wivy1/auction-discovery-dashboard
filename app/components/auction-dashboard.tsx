@@ -10,6 +10,7 @@ import {
   type Listing,
   type LotFeedbackDecision,
   type LocalNightlyRunStatus,
+  type LocalLatestSourceDiscoveryReceipt,
   type LocalScheduleStatus,
   type OllamaHealth,
   type RunStatus,
@@ -711,7 +712,7 @@ function DiscoverMetrics({
   );
 }
 
-function DiscoveryStatus({
+export function DiscoveryStatus({
   run,
   nightlyStatus,
   running,
@@ -736,11 +737,17 @@ function DiscoveryStatus({
     run.state === "degraded" &&
     Boolean(run.errorMessage)
   );
+  const receipt = nightlyStatus?.latestSourceDiscovery;
+  const sourceResultTimes = [run.lastCompletedAt, run.lastSuccessfulCompletedAt]
+    .map((value) => Date.parse(value ?? "")).filter(Number.isFinite);
+  const sourceAttention = receipt &&
+    receipt.sourceOutcomeCounts.refreshed + receipt.sourceOutcomeCounts.skipped_recent < receipt.sourceCount &&
+    (sourceResultTimes.length === 0 || Date.parse(receipt.recordedAt) >= Math.max(...sourceResultTimes));
   const tone: StatusTone = running
     ? "neutral"
     : nightlyFailure || failed
       ? "error"
-    : maintenanceDeferred || mixedTerminal || checkpointPause || refreshRequired ||
+    : maintenanceDeferred || mixedTerminal || checkpointPause || sourceAttention || refreshRequired ||
         run.state === "degraded"
       ? "warning"
       : run.lastCompletedAt ? "good" : "neutral";
@@ -760,6 +767,8 @@ function DiscoveryStatus({
         ? "Last run failed"
         : run.state === "degraded"
           ? "Last run needs attention"
+          : sourceAttention
+            ? `Source discovery needs attention ${formatDateTime(receipt.recordedAt)}`
           : run.lastCompletedAt
             ? `Completed ${formatDateTime(run.lastCompletedAt)}`
             : "No completed run yet";
@@ -954,7 +963,7 @@ function nightlySourceContext(
   };
 }
 
-function nightlySourceOutcomeSummary(status: LocalNightlyRunStatus): string | null {
+function nightlySourceOutcomeSummary(status: Pick<LocalLatestSourceDiscoveryReceipt, "sourceOutcomeCounts">): string | null {
   if (Object.values(status.sourceOutcomeCounts).every((count) => count === 0)) return null;
   return ([
     "refreshed", "skipped_recent", "preserved", "paused", "stopped", "blocked",
@@ -963,6 +972,37 @@ function nightlySourceOutcomeSummary(status: LocalNightlyRunStatus): string | nu
       ? [`${status.sourceOutcomeCounts[outcome]} ${humanizeIdentifier(outcome).toLocaleLowerCase()}`]
       : [])
     .join(" · ");
+}
+
+export function LatestSourceDiscoveryPanel({ status }: { status: LocalNightlyRunStatus | null }) {
+  const receipt = status?.latestSourceDiscovery;
+  if (!receipt || status?.active || (
+    status?.workflowStartedAt === receipt.startedAt && status.sourceOutcomes.length === receipt.sourceCount
+  )) return null;
+  const verified = receipt.sourceOutcomeCounts.refreshed + receipt.sourceOutcomeCounts.skipped_recent;
+  return (
+    <details className="nightly-progress-panel nightly-progress-panel-summary" aria-label="Latest source discovery outcomes">
+      <summary className="nightly-progress-heading">
+        <span className="nightly-progress-heading-copy">
+          <span>Latest source discovery · Recorded {formatDateTime(receipt.recordedAt)}</span>
+          <strong>{receipt.sourceCount === 0 ? "No enabled sources" : verified === receipt.sourceCount ? "Source catalogs verified" : "Source discovery needs attention"}</strong>
+        </span>
+      </summary>
+      <div className="nightly-progress-facts">
+        <span><b>Source discovery started</b>{formatDateTime(receipt.startedAt)}</span>
+        <span><b>Source outcomes</b>{nightlySourceOutcomeSummary(receipt) ?? "No sources were enabled for this discovery."}</span>
+        {receipt.sourceOutcomes.map((outcome) => (
+          <span key={outcome.sourceId}>
+            <b>{humanizeIdentifier(outcome.sourceId)}</b>
+            {humanizeIdentifier(outcome.outcome)} · {humanizeIdentifier(outcome.reasonCode)}
+            {outcome.resultingHead ? ` · ${outcome.resultingHead.listingCount.toLocaleString()} catalog listings` :
+              outcome.priorHead ? ` · prior ${outcome.priorHead.listingCount.toLocaleString()}-listing catalog retained` : " · no prior catalog"}
+            {outcome.nextEligibleAt ? ` · eligible ${formatDateTime(outcome.nextEligibleAt)}` : ""}
+          </span>
+        ))}
+      </div>
+    </details>
+  );
 }
 
 function nightlyStageCopy(stage: string | null): { label: string; activity: string } {
@@ -2141,6 +2181,7 @@ function DiscoverView({
       </div>
 
       <NightlyProgressPanel run={data.run} status={nightlyStatus} />
+      <LatestSourceDiscoveryPanel status={nightlyStatus} />
 
       {dashboardDegraded && dataMode === "api" ? (
         <p className="refresh-notice" role="status">

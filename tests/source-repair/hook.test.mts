@@ -11,15 +11,19 @@ const terminalFinally = source.slice(source.lastIndexOf("} finally {") + "} fina
 assert.ok(terminalFinally.endsWith("}")); const finalBody = terminalFinally.slice(0, -1);
 const windows = process.platform === "win32";
 const idle = { idle: true, active: [], activeReservations: [], activeWorkClaims: [], orphanedRuns: [] };
-async function runHook(root: string, options: { state?: string; healthOnly?: boolean; enabled?: string; childExit?: number; omitChild?: boolean; observation?: unknown; idleExit?: number; omitEnd?: boolean } = {}) {
+async function runHook(root: string, options: { state?: string; healthOnly?: boolean; enabled?: string; childExit?: number; omitChild?: boolean; observation?: unknown; idleExit?: number; omitEnd?: boolean; progress?: boolean; legacyQuiet?: boolean } = {}) {
   const scripts = join(root, "scripts"); await mkdir(scripts, { recursive: true });
   await writeFile(join(scripts, "node-runtime-preload.mjs"), "// Inert fixture preload.\n");
   await writeFile(join(scripts, "check-pipeline-idle.mjs"), `console.log(${JSON.stringify(JSON.stringify(options.observation ?? idle))});process.exitCode=${options.idleExit ?? 0};\n`);
   if (!options.omitChild) await writeFile(join(scripts, "source-repair-sandbox.mts"), `import {openSync,closeSync,writeFileSync} from 'node:fs';import {fileURLToPath} from 'node:url';
     const root=fileURLToPath(new URL('../',import.meta.url));const lock=openSync(root+'nightly.lock','r+');closeSync(lock);
-    writeFileSync(root+'child.json',JSON.stringify({args:process.argv.slice(2),lockReleased:true}));process.exitCode=${options.childExit ?? 0};`);
+    writeFileSync(root+'child.json',JSON.stringify({args:process.argv.slice(2),lockReleased:true}));
+    ${options.progress ? "if(!process.argv.includes('--quiet'))process.stderr.write('1/1: fixture progress\\n');console.log(JSON.stringify({schemaVersion:'fixture-result',quiet:process.argv.includes('--quiet')}));" : ""}
+    process.exitCode=${options.childExit ?? 0};`);
   const harness = join(scripts, "hook-fixture.ps1");
-  await writeFile(harness, `Set-StrictMode -Version Latest\n$ErrorActionPreference='Stop'\n${helper}\n
+  const selectedHelper = options.legacyQuiet ? helper.replace("--limit 2 --quiet", "--limit 2") : helper;
+  if (options.legacyQuiet) assert.notEqual(selectedHelper, helper);
+  await writeFile(harness, `Set-StrictMode -Version Latest\n$ErrorActionPreference='Stop'\n${selectedHelper}\n
     $NodeExe=${psLiteral(process.execPath)}
     $NodeRuntimePreload=([Uri]${psLiteral(join(scripts, "node-runtime-preload.mjs"))}).AbsoluteUri
     $nightlyStatus=@{state=${psLiteral(options.state ?? "completed")};startedAt='2026-01-01T00:00:00.000Z';endedAt=${options.omitEnd ? "$null" : "'2026-01-01T01:00:00.000Z'"}}
@@ -36,7 +40,17 @@ async function runHook(root: string, options: { state?: string; healthOnly?: boo
 }
 test("terminal hook invokes the fixed CLI after releasing the real exclusive nightly lock", { skip: !windows }, async () => fixture(async (root) => {
   await runHook(root); const child = JSON.parse(await readFile(join(root, "child.json"), "utf8"));
-  assert.equal(child.lockReleased, true); assert.deepEqual(child.args, ["run", "--since", "2026-01-01T00:00:00.000Z", "--until", "2026-01-01T01:00:00.000Z", "--limit", "2"]);
+  assert.equal(child.lockReleased, true); assert.deepEqual(child.args, ["run", "--since", "2026-01-01T00:00:00.000Z", "--until", "2026-01-01T01:00:00.000Z", "--limit", "2", "--quiet"]);
+}));
+
+test("quiet hook prevents native PowerShell progress stderr from becoming an unavailable result", { skip: !windows }, async () => fixture(async (root) => {
+  const old = await runHook(join(root, "legacy"), { progress: true, legacyQuiet: true });
+  assert.match(old.result.stderr, /Optional proposal batch unavailable/u);
+  const current = await runHook(join(root, "current"), { progress: true });
+  assert.doesNotMatch(current.result.stderr, /Optional proposal batch unavailable|fixture progress/u);
+  assert.match(current.result.stderr, /fixture-result/u);
+  const child = JSON.parse(await readFile(join(root, "current", "child.json"), "utf8"));
+  assert.equal(child.args.at(-1), "--quiet");
 }));
 for (const [name, options] of [
   ["health-only", { healthOnly: true }], ["active workflow", { state: "running" }], ["failed workflow", { state: "failed" }],

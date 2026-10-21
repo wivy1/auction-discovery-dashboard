@@ -431,6 +431,7 @@ export interface LocalNightlyRunStatus {
   currentSourceId: string | null;
   sourceOutcomes: readonly LocalNightlySourceOutcome[];
   sourceOutcomeCounts: LocalNightlySourceOutcomeCounts;
+  latestSourceDiscovery?: LocalLatestSourceDiscoveryReceipt | null;
 }
 
 export interface LocalNightlyProximityProgress {
@@ -511,6 +512,17 @@ export type LocalNightlySourceOutcomeCounts = Readonly<Record<
   LocalNightlySourceOutcome["outcome"],
   number
 >>;
+
+export interface LocalLatestSourceDiscoveryReceipt {
+  readonly schemaVersion: "auction-discovery-source-discovery-v1";
+  readonly startedAt: string;
+  readonly recordedAt: string;
+  readonly runtimeRevision: string;
+  readonly sourceCount: number;
+  readonly sourceIds: readonly string[];
+  readonly sourceOutcomes: readonly LocalNightlySourceOutcome[];
+  readonly sourceOutcomeCounts: LocalNightlySourceOutcomeCounts;
+}
 
 export interface NewerNightlyWorkflowFailure {
   endedAt: string;
@@ -849,7 +861,7 @@ function safeNightlyIdentity(value: unknown, maximumLength = 1_024): value is st
 }
 
 export function parseNightlySourceOutcomes(value: unknown): readonly LocalNightlySourceOutcome[] | null {
-  if (!Array.isArray(value)) return null;
+  if (!Array.isArray(value) || value.length > 10000) return null;
   const outcomes: LocalNightlySourceOutcome[] = [];
   for (const candidate of value) {
     if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
@@ -922,6 +934,46 @@ function countNightlySourceOutcomes(
   };
   for (const outcome of outcomes) counts[outcome.outcome] += 1;
   return counts;
+}
+
+export function parseLocalLatestSourceDiscovery(value: unknown): LocalLatestSourceDiscoveryReceipt | null {
+  try {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    if (
+      !exactObjectKeys(record, [
+        "schemaVersion", "startedAt", "recordedAt", "runtimeRevision", "sourceCount", "sourceIds", "sourceOutcomes", "sourceOutcomeCounts",
+      ]) || record.schemaVersion !== "auction-discovery-source-discovery-v1" ||
+      !Number.isSafeInteger(record.sourceCount) || Number(record.sourceCount) < 0 || Number(record.sourceCount) > 10000 ||
+      typeof record.startedAt !== "string" || typeof record.recordedAt !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(record.startedAt) ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(record.recordedAt) ||
+      !Number.isFinite(Date.parse(record.startedAt)) || !Number.isFinite(Date.parse(record.recordedAt)) ||
+      new Date(record.startedAt).toISOString() !== record.startedAt || new Date(record.recordedAt).toISOString() !== record.recordedAt ||
+      Date.parse(record.recordedAt) < Date.parse(record.startedAt) ||
+      typeof record.runtimeRevision !== "string" || !/^sha256:[a-f0-9]{64}$/u.test(record.runtimeRevision) ||
+      new TextEncoder().encode(JSON.stringify(record)).byteLength > 64 * 1024
+    ) return null;
+    const sourceOutcomes = parseNightlySourceOutcomes(record.sourceOutcomes);
+    if (sourceOutcomes === null || sourceOutcomes.length !== record.sourceCount) return null;
+    if (!Array.isArray(record.sourceIds) || record.sourceIds.length !== sourceOutcomes.length ||
+        record.sourceIds.some((sourceId, index) => sourceId !== sourceOutcomes[index]!.sourceId)) return null;
+    if (typeof record.sourceOutcomeCounts !== "object" || record.sourceOutcomeCounts === null || Array.isArray(record.sourceOutcomeCounts)) return null;
+    const counts = record.sourceOutcomeCounts as Record<string, unknown>;
+    const expected = countNightlySourceOutcomes(sourceOutcomes);
+    if (!exactObjectKeys(counts, NIGHTLY_SOURCE_OUTCOME_NAMES) ||
+        NIGHTLY_SOURCE_OUTCOME_NAMES.some((name) => counts[name] !== expected[name])) return null;
+    return {
+      schemaVersion: "auction-discovery-source-discovery-v1",
+      startedAt: record.startedAt,
+      recordedAt: record.recordedAt,
+      runtimeRevision: record.runtimeRevision,
+      sourceCount: Number(record.sourceCount),
+      sourceIds: sourceOutcomes.map(({ sourceId }) => sourceId),
+      sourceOutcomes,
+      sourceOutcomeCounts: expected,
+    };
+  } catch { return null; }
 }
 
 function isScheduleOutcome(value: unknown): value is LocalScheduleStatus["outcome"] {
@@ -1283,6 +1335,7 @@ export function parseLocalNightlyRunStatus(value: unknown): LocalNightlyRunStatu
     currentSourceId: nullableText(record.currentSourceId, 128),
     sourceOutcomes,
     sourceOutcomeCounts,
+    latestSourceDiscovery: parseLocalLatestSourceDiscovery(record.latestSourceDiscovery),
   };
 }
 

@@ -72,7 +72,7 @@ The **Interest profile** summarizes these patterns and shows the tags contributi
 
 Requires Windows 10 or 11, Node.js 22.13 or newer, pnpm 11.7.0, and a modern browser.
 
-Clone the repository or [download the current `main` branch](https://github.com/wivy1/auction-discovery-dashboard/archive/refs/heads/main.zip). Extract to a writable folder and run:
+Clone the repository or [download the current `main` branch](https://github.com/wivy1/auction-discovery-dashboard/archive/refs/heads/main.zip). Extract to a short writable path such as `C:\auction-discovery`; deeply nested folders can prevent the local database from opening on Windows. Then run:
 
 ```powershell
 .\scripts\setup.cmd

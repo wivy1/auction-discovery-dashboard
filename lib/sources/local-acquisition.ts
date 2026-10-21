@@ -1,4 +1,8 @@
 const DEFAULT_COMPANION_PORT = 32_110;
+const RUNTIME_PREFLIGHT_TIMEOUT_MS = 5_000;
+const RUNTIME_REVISION_SCHEMA = "auction-discovery-runtime-revision-v1";
+const RUNTIME_REVISION_HEADER = "x-auction-discovery-runtime-revision";
+const RUNTIME_REVISION_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const SOURCE_ACQUISITION_TIMEOUT_MS = 30 * 60 * 1_000;
 const NORMAL_SOURCE_ACQUISITION_TIMEOUT_MS = 3 * 60 * 60 * 1_000;
 const MAX_RESPONSE_BYTES = 64 * 1024;
@@ -127,6 +131,8 @@ export async function triggerLocalSourceAcquisition(
   );
   let response: Response;
   try {
+    const runtime = await preflightRuntimeRevision(abort.signal);
+    if ("errorCode" in runtime) return unavailable(mode, runtime.errorCode);
     response = await fetch(
       `http://127.0.0.1:${DEFAULT_COMPANION_PORT}/v1/source-acquisition`,
       {
@@ -135,6 +141,7 @@ export async function triggerLocalSourceAcquisition(
         headers: {
           accept: "application/json",
           "content-type": "application/json",
+          [RUNTIME_REVISION_HEADER]: runtime.revision,
         },
         body: JSON.stringify({
           sourceId,
@@ -150,13 +157,14 @@ export async function triggerLocalSourceAcquisition(
       },
     );
     const payload = await readBoundedJson(response);
-    if (response.status === 409) {
-      return unavailable(mode, "source_acquisition_busy", "busy");
-    }
     if (!response.ok) {
       const code = isRecord(payload) && typeof payload.code === "string"
         ? payload.code.slice(0, 100)
         : `source_acquisition_http_${response.status}`;
+      if (response.status === 409 &&
+        (code === "source_acquisition_busy" || code === "companion_mutation_busy")) {
+        return unavailable(mode, code, "busy");
+      }
       return unavailable(mode, code);
     }
     return parseResponse(payload, sourceId, mode) ??
@@ -174,6 +182,49 @@ export async function triggerLocalSourceAcquisition(
 }
 
 export const triggerLocalBrowserSourceAcquisition = triggerLocalSourceAcquisition;
+
+async function preflightRuntimeRevision(
+  signal: AbortSignal,
+): Promise<{ revision: string } | { errorCode: string }> {
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  if (signal.aborted) controller.abort();
+  else signal.addEventListener("abort", cancel, { once: true });
+  const timer = setTimeout(cancel, RUNTIME_PREFLIGHT_TIMEOUT_MS);
+  try {
+    const [appResponse, companionResponse] = await Promise.all([
+      fetch("/api/internal/runtime-revision", {
+        cache: "no-store", redirect: "error",
+        headers: { accept: "application/json" }, signal: controller.signal,
+      }),
+      fetch(`http://127.0.0.1:${DEFAULT_COMPANION_PORT}/v1/health`, {
+        cache: "no-store", redirect: "error",
+        headers: { accept: "application/json" }, signal: controller.signal,
+      }),
+    ]);
+    const [app, companion] = await Promise.all([
+      readBoundedJson(appResponse), readBoundedJson(companionResponse),
+    ]);
+    if (!appResponse.ok || !companionResponse.ok ||
+      !isRecord(app) || !isRecord(companion) || companion.status !== "ready" ||
+      app.schemaVersion !== RUNTIME_REVISION_SCHEMA ||
+      companion.runtimeRevisionSchema !== RUNTIME_REVISION_SCHEMA ||
+      typeof app.revision !== "string" || !RUNTIME_REVISION_PATTERN.test(app.revision) ||
+      typeof companion.runtimeRevision !== "string" || !RUNTIME_REVISION_PATTERN.test(companion.runtimeRevision)) {
+      return { errorCode: "runtime_revision_unavailable" };
+    }
+    if (app.revision !== companion.runtimeRevision) {
+      return { errorCode: "runtime_revision_mismatch" };
+    }
+    return { revision: app.revision };
+  } catch {
+    return { errorCode: "runtime_revision_unavailable" };
+  } finally {
+    controller.abort();
+    clearTimeout(timer);
+    signal.removeEventListener("abort", cancel);
+  }
+}
 
 function parseResponse(
   value: unknown,

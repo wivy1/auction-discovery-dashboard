@@ -63,6 +63,17 @@ export type NightlySourceOutcomeCounts = Readonly<Record<
   number
 >>;
 
+export interface LatestSourceDiscoveryReceipt {
+  readonly schemaVersion: "auction-discovery-source-discovery-v1";
+  readonly startedAt: string;
+  readonly recordedAt: string;
+  readonly runtimeRevision: string;
+  readonly sourceCount: number;
+  readonly sourceIds: readonly string[];
+  readonly sourceOutcomes: readonly NightlySourceOutcome[];
+  readonly sourceOutcomeCounts: NightlySourceOutcomeCounts;
+}
+
 export type NightlyProgressPhase =
   | "snapshot"
   | "batch_started"
@@ -198,6 +209,7 @@ export interface VisibleNightlyRun {
   readonly currentSourceId: string | null;
   readonly sourceOutcomes: readonly NightlySourceOutcome[];
   readonly sourceOutcomeCounts: NightlySourceOutcomeCounts;
+  readonly latestSourceDiscovery?: LatestSourceDiscoveryReceipt | null;
 }
 
 export interface NightlyWorkflowProgress {
@@ -661,22 +673,30 @@ function parsePublicationHead(
   };
 }
 
-function parseSourceOutcomes(value: unknown): readonly NightlySourceOutcome[] | null {
-  if (!Array.isArray(value) || value.length > SOURCE_OUTCOME_ORDER.length) return null;
+function parseSourceOutcomes(
+  value: unknown,
+  sourceOrder: readonly string[] | null = SOURCE_OUTCOME_ORDER,
+): readonly NightlySourceOutcome[] | null {
+  if (!Array.isArray(value) || value.length > (sourceOrder?.length ?? 10000)) return null;
   const outcomes: NightlySourceOutcome[] = [];
-  for (const [index, candidate] of value.entries()) {
+  let previousSourceIndex = -1;
+  for (const candidate of value) {
     const record = asRecord(candidate);
+    const sourceIndex = sourceOrder?.indexOf(String(record?.sourceId)) ?? null;
     if (
       record === null ||
       !exactKeys(record, [
         "sourceId", "outcome", "dependencySatisfied", "reasonCode", "priorHead",
         "resultingHead", "nextEligibleAt", "proofIdentity", "receiptIdentity",
       ]) ||
-      record.sourceId !== SOURCE_OUTCOME_ORDER[index] ||
+      !safeIdentity(record.sourceId, 128) ||
+      outcomes.some(({ sourceId }) => sourceId === record.sourceId) ||
+      (sourceIndex !== null && sourceIndex <= previousSourceIndex) ||
       !SOURCE_OUTCOME_NAMES.includes(record.outcome as typeof SOURCE_OUTCOME_NAMES[number]) ||
       typeof record.dependencySatisfied !== "boolean" ||
       !safeIdentity(record.reasonCode, 128)
     ) return null;
+    if (sourceIndex !== null) previousSourceIndex = sourceIndex;
     const priorHead = parsePublicationHead(record.priorHead);
     const resultingHead = parsePublicationHead(record.resultingHead);
     if (priorHead === undefined || resultingHead === undefined) return null;
@@ -733,6 +753,7 @@ function parseSourceOutcomeCounts(
   value: unknown,
   outcomes: readonly NightlySourceOutcome[],
   requireVectorMatch: boolean,
+  maximumCount = SOURCE_OUTCOME_ORDER.length,
 ): NightlySourceOutcomeCounts | null {
   if (value === undefined) return sourceOutcomeCounts(outcomes);
   const record = asRecord(value);
@@ -743,16 +764,54 @@ function parseSourceOutcomeCounts(
   >;
   for (const name of SOURCE_OUTCOME_NAMES) {
     const count = nullableNonnegativeInteger(record[name]);
-    if (count === null || count > SOURCE_OUTCOME_ORDER.length) return null;
+    if (count === null || count > maximumCount) return null;
     parsed[name] = count;
   }
   const total = SOURCE_OUTCOME_NAMES.reduce((sum, name) => sum + parsed[name], 0);
-  if (total > SOURCE_OUTCOME_ORDER.length) return null;
+  if (total > maximumCount) return null;
   if (requireVectorMatch) {
     const vectorCounts = sourceOutcomeCounts(outcomes);
     if (SOURCE_OUTCOME_NAMES.some((name) => parsed[name] !== vectorCounts[name])) return null;
   }
   return parsed;
+}
+
+export function parseLatestSourceDiscoveryReceipt(value: unknown): LatestSourceDiscoveryReceipt | null {
+  try {
+    const record = asRecord(value);
+    if (
+      record === null || !exactKeys(record, [
+        "schemaVersion", "startedAt", "recordedAt", "runtimeRevision", "sourceCount", "sourceIds", "sourceOutcomes", "sourceOutcomeCounts",
+      ]) || record.schemaVersion !== "auction-discovery-source-discovery-v1" ||
+      !Number.isSafeInteger(record.sourceCount) || Number(record.sourceCount) < 0 || Number(record.sourceCount) > 10000 ||
+      typeof record.startedAt !== "string" || typeof record.recordedAt !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(record.startedAt) ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(record.recordedAt) ||
+      !Number.isFinite(Date.parse(record.startedAt)) || !Number.isFinite(Date.parse(record.recordedAt)) ||
+      new Date(record.startedAt).toISOString() !== record.startedAt ||
+      new Date(record.recordedAt).toISOString() !== record.recordedAt ||
+      Date.parse(record.recordedAt) < Date.parse(record.startedAt) || !isRuntimeRevision(record.runtimeRevision) ||
+      Buffer.byteLength(JSON.stringify(record), "utf8") > MAX_OUTPUT_BYTES
+    ) return null;
+    // Historical receipts retain the source set from their own campaign. A later
+    // registry edit must not rewrite or discard those observed outcomes.
+    const sourceOutcomes = parseSourceOutcomes(record.sourceOutcomes, null);
+    if (sourceOutcomes === null || sourceOutcomes.length !== record.sourceCount) return null;
+    if (!Array.isArray(record.sourceIds) || record.sourceIds.length !== sourceOutcomes.length ||
+        record.sourceIds.some((sourceId, index) => sourceId !== sourceOutcomes[index]!.sourceId)) return null;
+    const counts = parseSourceOutcomeCounts(record.sourceOutcomeCounts, sourceOutcomes, true, sourceOutcomes.length);
+    if (counts === null) return null;
+    return {
+      schemaVersion: "auction-discovery-source-discovery-v1",
+      startedAt: record.startedAt,
+      recordedAt: record.recordedAt,
+      runtimeRevision: record.runtimeRevision,
+      sourceCount: Number(record.sourceCount),
+      sourceIds: sourceOutcomes.map(({ sourceId }) => sourceId),
+      sourceOutcomes,
+      sourceOutcomeCounts: counts,
+    };
+  } catch { return null; }
 }
 
 export function parseNightlyWorkflowStatus(contents: string): NightlyWorkflowProgress {
@@ -798,8 +857,8 @@ export function parseNightlyWorkflowStatus(contents: string): NightlyWorkflowPro
     const parsedSourceOutcomes = parseSourceOutcomes(status.sourceOutcomes ?? []);
     if (
       parsedSourceOutcomes === null ||
-      (status.stage === "complete" &&
-        parsedSourceOutcomes.length !== SOURCE_OUTCOME_ORDER.length)
+      (status.stage === "complete" && campaignSourcesTotal !== null &&
+        parsedSourceOutcomes.length !== campaignSourcesTotal)
     ) return nullWorkflowProgress();
     const sourceOutcomes = parsedSourceOutcomes ?? [];
     const parsedSourceOutcomeCounts = parseSourceOutcomeCounts(
@@ -991,6 +1050,15 @@ async function readWorkflowStatus(
   } catch {
     return null;
   }
+}
+
+export async function readLatestSourceDiscoveryReceipt(projectRoot: string): Promise<LatestSourceDiscoveryReceipt | null> {
+  try {
+    const contents = await readFile(resolve(projectRoot, ".wrangler", "logs", "latest-source-discovery.json"), "utf8");
+    return Buffer.byteLength(contents, "utf8") <= MAX_OUTPUT_BYTES
+      ? parseLatestSourceDiscoveryReceipt(JSON.parse(contents) as unknown)
+      : null;
+  } catch { return null; }
 }
 
 export function mergeVisibleNightlyWorkflowProgress(
@@ -1273,10 +1341,13 @@ export async function readVisibleNightlyRun(
         await readLastKnownNightlyManifest(config.projectRoot, expectedRuntimeRevision) ??
         activeManifestState
       : activeManifestState;
-    return mergeVisibleNightlyWorkflowProgress(
-      manifestState,
-      parseNightlyWorkflowStatus(workflowContents ?? "null"),
-    );
+    return {
+      ...mergeVisibleNightlyWorkflowProgress(
+        manifestState,
+        parseNightlyWorkflowStatus(workflowContents ?? "null"),
+      ),
+      latestSourceDiscovery: await readLatestSourceDiscoveryReceipt(config.projectRoot),
+    };
   } catch (error) {
     if (error instanceof NightlyVisibleControlError) throw error;
     throw new NightlyVisibleControlError(

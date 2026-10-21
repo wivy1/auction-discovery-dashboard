@@ -38,6 +38,7 @@ import {
 } from "../sources/access-state";
 import { checkSourceDocumentAccess } from "../sources/acquisition-access";
 import { getSourceAdapter } from "../sources/registry";
+import { SOURCE_ADAPTER_FAILURE_CODE, SOURCE_ADAPTER_FAILURE_MESSAGE, parseSourceAdapterFailureEnvelope } from "../sources/failure-envelope";
 import {
   commitSourceAcquisitionReservation,
   putSourceAcquiredBundle,
@@ -2378,6 +2379,10 @@ type FailedSourceCallbackBoundary =
       readonly checkpointAdvanced: boolean;
     }
   | {
+      readonly kind: "structural_stop";
+      readonly reasonCode: "source_adapter_contract_failed";
+    }
+  | {
       readonly kind: "callback_failure";
       readonly reasonCode: string;
     };
@@ -2453,6 +2458,8 @@ async function finalizeFailedSourceAcquisition(input: {
             ? "source_checkpoint_advanced" as const
             : "source_checkpoint_safely_replanned" as const,
         })
+      : retainedSourceAdapterCallbackFailure(input.receipt, input.candidate.sourceId)
+      ? Object.freeze({ kind: "structural_stop" as const, reasonCode: SOURCE_ADAPTER_FAILURE_CODE })
       : Object.freeze({
           kind: "callback_failure" as const,
           reasonCode: callbackFailureCode(
@@ -2507,6 +2514,9 @@ function failedSourceCallbackOutcome(
   if (boundary.kind === "access_stop") {
     return failedSourceAccessOutcome(boundary, boundary.checkpointAdvanced);
   }
+  if (boundary.kind === "structural_stop") {
+    return Object.freeze({ classification: "no_progress", madeProgress: false, remaining: true, reasonCode: boundary.reasonCode });
+  }
   return Object.freeze({
     classification: "retryable_pressure",
     madeProgress: false,
@@ -2514,6 +2524,20 @@ function failedSourceCallbackOutcome(
     availableAt: new Date(releasedAt.getTime() + RETRY_DELAY_MS).toISOString(),
     reasonCode: boundary.reasonCode,
   });
+}
+
+function retainedSourceAdapterCallbackFailure(receipt: SchedulerCallbackReceipt, sourceId: string): boolean {
+  return receipt.status === 422 && isRecord(receipt.body) &&
+    Object.keys(receipt.body).every((key) => [
+      "error", "code", "sourceId", "failure", "upstreamCode", "upstreamError", "upstreamDiagnostic", "retryAfterMs",
+    ].includes(key)) &&
+    receipt.body.code === SOURCE_ADAPTER_FAILURE_CODE && receipt.body.sourceId === sourceId &&
+    receipt.body.error === SOURCE_ADAPTER_FAILURE_MESSAGE &&
+    (receipt.body.upstreamCode === undefined || receipt.body.upstreamCode === SOURCE_ADAPTER_FAILURE_CODE) &&
+    (receipt.body.upstreamError === undefined || receipt.body.upstreamError === null) &&
+    (receipt.body.upstreamDiagnostic === undefined || receipt.body.upstreamDiagnostic === null) &&
+    (receipt.body.retryAfterMs === undefined || receipt.body.retryAfterMs === null) &&
+    parseSourceAdapterFailureEnvelope(receipt.body.failure) !== null;
 }
 
 interface SourceCallbackAccessBoundary {

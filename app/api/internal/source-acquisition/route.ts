@@ -7,6 +7,7 @@ import { configuredSourceAccessGrant } from "../../../../lib/settings/source-man
 import { readEnabledSourceIds } from "../../../../lib/pipeline/storage";
 import { runAuctionDiscovery } from "../../../../lib/pipeline/discovery";
 import { planGenericSourceAcquisition, validateGenericAcquiredPages } from "../../../../lib/pipeline/source-acquisition";
+import { SOURCE_ADAPTER_FAILURE_CODE, SOURCE_ADAPTER_FAILURE_MESSAGE, sourceAdapterFailureEnvelope } from "../../../../lib/sources/failure-envelope";
 
 export const dynamic = "force-dynamic";
 
@@ -23,12 +24,22 @@ export async function POST(request: Request) {
     if (payload.trigger !== undefined && payload.trigger !== "manual" && payload.trigger !== "scheduled") throw new HttpError("Invalid discovery trigger", 400);
     await ensureDatabase();
     const enabled = await readEnabledSourceIds();
-    const plan = planGenericSourceAcquisition(payload.sourceId, configuredSourceAccessGrant(payload.sourceId, enabled.has(payload.sourceId)));
+    let plan: ReturnType<typeof planGenericSourceAcquisition>;
+    try {
+      plan = planGenericSourceAcquisition(payload.sourceId, configuredSourceAccessGrant(payload.sourceId, enabled.has(payload.sourceId)));
+    } catch (error) {
+      return sourceAdapterFailureResponse(error, payload.sourceId) ?? jsonError(error);
+    }
     if (payload.action === "plan") {
       if (payload.pages !== undefined) throw new HttpError("Planning cannot submit pages", 400);
       return Response.json({ plan });
     }
-    const pages = await validateGenericAcquiredPages(plan, payload.pages);
+    let pages: Awaited<ReturnType<typeof validateGenericAcquiredPages>>;
+    try {
+      pages = await validateGenericAcquiredPages(plan, payload.pages);
+    } catch (error) {
+      return sourceAdapterFailureResponse(error, payload.sourceId) ?? jsonError(error);
+    }
     // runAuctionDiscovery owns the existing singleton D1/R2 mutation lease.
     const catalog = await runAuctionDiscovery(payload.trigger === "scheduled" ? "scheduled" : "manual", {
       sourceId: plan.sourceId, acquiredPages: pages, catalogOnly: true,
@@ -37,5 +48,12 @@ export async function POST(request: Request) {
   } catch (error) {
     return jsonError(error);
   }
+}
+
+function sourceAdapterFailureResponse(error: unknown, sourceId: string): Response | null {
+  const failure = sourceAdapterFailureEnvelope(error, sourceId);
+  return failure === null ? null : Response.json({
+    error: SOURCE_ADAPTER_FAILURE_MESSAGE, code: SOURCE_ADAPTER_FAILURE_CODE, sourceId, failure,
+  }, { status: 422 });
 }
 
