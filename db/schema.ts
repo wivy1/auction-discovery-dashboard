@@ -397,6 +397,9 @@ export const sourceInventoryPublications = sqliteTable(
     collectionCountsJson: text("collection_counts_json")
       .notNull()
       .default("[]"),
+    publisherLeadEvidenceJson: text("publisher_lead_evidence_json")
+      .notNull()
+      .default("[]"),
     publishedAt: text("published_at").notNull().default(nowUtc),
   },
   (table) => [
@@ -409,6 +412,10 @@ export const sourceInventoryPublications = sqliteTable(
     check(
       "source_inventory_publications_collection_counts_check",
       sql`json_valid(${table.collectionCountsJson}) and json_type(${table.collectionCountsJson}) = 'array'`,
+    ),
+    check(
+      "source_inventory_publications_publisher_lead_evidence_check",
+      sql`json_valid(${table.publisherLeadEvidenceJson}) and json_type(${table.publisherLeadEvidenceJson}) = 'array' and json_array_length(${table.publisherLeadEvidenceJson}) <= 20`,
     ),
   ],
 );

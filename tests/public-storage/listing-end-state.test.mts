@@ -124,27 +124,36 @@ test("active and transaction-time leases block every override; expired leases pe
   } finally { sqlite.close(); }
 });
 
-test("V45 upgrade adds only operator-end state and preserves retained source and vote records", async () => {
+test("V45 upgrade adds operator-end and event-lead storage while preserving source and vote records", async () => {
   const sqlite = new DatabaseSync(":memory:");
   const adapter = new Database(sqlite);
   try {
     sqlite.exec("PRAGMA foreign_keys = ON");
     const statements = schema.PUBLIC_SCHEMA_STATEMENTS
       .filter(sql => !sql.includes('CREATE TABLE IF NOT EXISTS listing_end_overrides'))
-      .map(sql => sql.replace('VALUES (1, 46, strftime', 'VALUES (1, 45, strftime'));
+      .map(sql => sql.includes('CREATE TABLE IF NOT EXISTS source_inventory_publications (')
+        ? `CREATE TABLE IF NOT EXISTS source_inventory_publications (
+            source_id TEXT NOT NULL REFERENCES auction_sources(id),
+            inventory_run_id TEXT NOT NULL REFERENCES discovery_runs(id),
+            listing_count INTEGER NOT NULL,
+            published_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            collection_counts_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(collection_counts_json) AND json_type(collection_counts_json) = 'array'),
+            PRIMARY KEY(source_id,inventory_run_id), CHECK(listing_count >= 0))`
+        : sql.replace(/\s+OR existing\.publisher_lead_evidence_json <> NEW\.publisher_lead_evidence_json/u, ''))
+      .map(sql => sql.replace(`VALUES (1, ${schema.DATABASE_SCHEMA_VERSION}, strftime`, 'VALUES (1, 45, strftime'));
     await adapter.batch([schema.CREATE_SCHEMA_METADATA_SQL, ...statements].map(sql => adapter.prepare(sql)));
     seed(sqlite);
     const original = sourceSnapshot(sqlite);
     const tablesBefore = new Set(sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => row.name));
     assert.equal(tablesBefore.has("listing_end_overrides"), false);
     const result = await ensureDatabase(adapter.binding());
-    assert.equal(result.version, 46);
+    assert.equal(result.version, schema.DATABASE_SCHEMA_VERSION);
     assert.equal(result.initialized, true);
     assert.equal(sourceSnapshot(sqlite), original);
     const added = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table'").all()
       .map(row => row.name).filter(name => !tablesBefore.has(name));
     assert.deepEqual(added, ["listing_end_overrides"]);
-    assert.deepEqual(await ensureDatabase(adapter.binding()), { version: 46, initialized: false });
+    assert.deepEqual(await ensureDatabase(adapter.binding()), { version: schema.DATABASE_SCHEMA_VERSION, initialized: false });
     assert.equal((await markListingsEnded(adapter.binding(), ["fixture:unknown"])).outcomes[0]!.status, "changed");
   } finally { sqlite.close(); }
 });
@@ -158,13 +167,13 @@ test("backend rejects malformed or oversized mutation sets before writing", asyn
     assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM listing_end_overrides").get()!.count, 0);
   } finally { sqlite.close(); }
 });
-test("public fresh Drizzle schema installs the same usable V46 operator state", async () => {
+test("public fresh Drizzle schema installs the current usable operator state", async () => {
   const sqlite = new DatabaseSync(":memory:");
   const adapter = new Database(sqlite);
   try {
     sqlite.exec("PRAGMA foreign_keys = ON");
     sqlite.exec(readFileSync(new URL("../../drizzle/0000_public_schema.sql", import.meta.url), "utf8"));
-    assert.deepEqual(await ensureDatabase(adapter.binding()), { version: 46, initialized: false });
+    assert.deepEqual(await ensureDatabase(adapter.binding()), { version: schema.DATABASE_SCHEMA_VERSION, initialized: false });
     seed(sqlite);
     assert.equal((await markListingsEnded(adapter.binding(), ["fixture:unknown"])).outcomes[0]!.status, "changed");
     assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE name = '_auction_discovery_schema'").get()!.count, 0);

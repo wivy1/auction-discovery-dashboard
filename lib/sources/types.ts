@@ -173,6 +173,90 @@ export interface SourceDiscoveryContext {
   readonly originPostalCode?: string;
 }
 
+/** Separate source observations for an event lead with unresolved geography. */
+export interface SourcePublisherUnresolvedAddressLeadEvidence {
+  readonly kind: "unresolved_address_v1";
+  readonly publisherHost: string;
+  readonly eventId: string;
+  readonly canonicalUrl: string;
+  readonly addressStatus: "unresolved";
+  readonly root: {
+    readonly url: string;
+    readonly bodyHash: string;
+    readonly fetchedAt: string;
+    readonly inlineAddress: null;
+    readonly renderedAddressText: string;
+  };
+  readonly event: {
+    readonly bodyHash: string;
+    readonly fetchedAt: string;
+    readonly inlineAddress: null;
+    readonly renderedAddressText: null;
+  };
+}
+
+/** An opaque publisher action is retained without granting its destination. */
+export interface SourcePublisherUnresolvedOutboundLeadEvidence {
+  readonly kind: "unresolved_outbound_v1";
+  readonly publisherHost: string;
+  readonly eventId: string;
+  readonly canonicalUrl: string;
+  readonly outboundStatus: "unresolved";
+  readonly root: {
+    readonly url: string;
+    readonly bodyHash: string;
+    readonly fetchedAt: string;
+  };
+  readonly event: {
+    readonly bodyHash: string;
+    readonly fetchedAt: string;
+    readonly outbound: {
+      /** Hash of the complete decoded source href, before URL serialization. */
+      readonly hrefHash: string;
+      readonly https: true;
+      readonly externalToPublisher: true;
+      readonly queryPresent: true;
+      readonly fragmentPresent: true;
+      readonly credentialsPresent: false;
+      readonly portPresent: false;
+      readonly signedQueryKeyPresent: false;
+    };
+  };
+}
+
+/** Reciprocal publisher leads share one opaque target and remain unresolved. */
+export interface SourcePublisherSharedOutboundLeadEvidence {
+  readonly kind: "shared_outbound_v1";
+  readonly publisherHost: string;
+  readonly eventId: string;
+  readonly canonicalUrl: string;
+  readonly outboundStatus: "unresolved";
+  readonly root: {
+    readonly url: string;
+    readonly bodyHash: string;
+    readonly fetchedAt: string;
+  };
+  readonly event: {
+    readonly bodyHash: string;
+    readonly fetchedAt: string;
+    readonly outboundTargetHash: string;
+  };
+  readonly peer: {
+    readonly eventId: string;
+    readonly canonicalUrlHash: string;
+  };
+}
+
+export type SourcePublisherEventLeadEvidence =
+  | SourcePublisherUnresolvedAddressLeadEvidence
+  | SourcePublisherUnresolvedOutboundLeadEvidence
+  | SourcePublisherSharedOutboundLeadEvidence;
+
+export interface SourceInventoryPublisherLeadEvidenceInput {
+  readonly pageKey: string;
+  readonly evidence: SourcePublisherEventLeadEvidence;
+}
+
 export interface SourceInventoryPageRequest {
   /** Stable, non-secret checkpoint identity for one traversal page. */
   readonly key: string;
@@ -194,6 +278,8 @@ export interface SourceInventoryPageRequest {
    * response contributes no rows but must complete before publication.
    */
   readonly reviewCandidate: boolean;
+  /** Optional facts from an already validated, unresolved zero-row event. */
+  readonly publisherEventLeadEvidence?: SourcePublisherEventLeadEvidence;
 }
 
 export type SourceInventoryCardinality = "exact" | "observed_union";
@@ -296,6 +382,15 @@ export interface SourceAdapter {
     pages: readonly SourcePage[],
     traversal: SourceInventoryTraversalPlan,
   ): void;
+
+  /**
+   * Preserve separate event-lead facts after all traversal pages pass validation.
+   * This callback parses only the supplied captures and makes no source request.
+   */
+  collectPublisherEventLeadEvidence?(
+    pages: readonly SourcePage[],
+    traversal: SourceInventoryTraversalPlan,
+  ): readonly SourceInventoryPublisherLeadEvidenceInput[];
 
   /**
    * Optional fast path for APIs whose discovery response already contains the

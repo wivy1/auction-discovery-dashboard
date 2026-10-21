@@ -2,6 +2,9 @@ import { createJsonApiSource } from "../../lib/sources/json-api.ts";
 import { createHeadlessBrowserSource, createHtmlSource, type SourceHtmlElement } from "../../lib/sources/html.ts";
 import type { GenericListingFacts } from "../../lib/sources/generic.ts";
 import type { SourceRegistration } from "../../lib/sources/registration.ts";
+import type { SourceAdapter, SourceInventoryTraversalPlan, SourcePage } from "../../lib/sources/types.ts";
+import { stableContentHash } from "../../lib/sources/parsing.ts";
+import { createHash } from "node:crypto";
 
 const access = {
   permissionBasis: "recorded_permission" as const,
@@ -48,4 +51,87 @@ const browser = createHeadlessBrowserSource({
   browser: { readySelector: "article, [data-empty]" },
   mapListing: (element) => mapHtml(element, "browser.fixture.test"),
 });
-export default [json, html, browser].map((adapter) => ({ adapter, enabled: true })) satisfies readonly SourceRegistration[];
+const leadBase = createHtmlSource({
+  id: "fixture_event_lead", displayName: "Fixture event lead", baseUrl: "https://events.fixture.test", inventoryUrl: "https://events.fixture.test/current",
+  access, requests, inlineDetails: true, inventorySelector: "main", listingSelector: "article", emptySelector: "[data-empty]",
+  mapListing: (element) => mapHtml(element, "events.fixture.test"),
+});
+const leadRoots = new WeakMap<SourceInventoryTraversalPlan, SourcePage>();
+const lead: SourceAdapter = {
+  ...leadBase,
+  planInventoryTraversal(root) {
+    const data = JSON.parse(root.body) as { eventId: string; eventIds?: string[]; address?: unknown; renderedAddress?: string; evidenceKind?: string };
+    const shared = data.evidenceKind === "shared" && JSON.stringify(data.eventIds) === JSON.stringify(["event-left", "event-right"]);
+    if (!(data.eventId === "event-a" && data.address === null && data.renderedAddress) &&
+      !(data.eventId === "event-opaque" && data.evidenceKind === "outbound") && !shared) throw new Error("Unrecognized event lead root");
+    const eventIds = shared ? data.eventIds! : [data.eventId];
+    const plan: SourceInventoryTraversalPlan = {
+      fingerprint: stableContentHash(root.body), expectedListings: 0,
+      pages: eventIds.map(eventId => ({ key: `event:${eventId}`, request: { kind: "discovery", url: `https://events.fixture.test/events/${eventId}` },
+        minimumListings: 0, maximumListings: 0, inventoryMember: false, reviewCandidate: false })),
+    };
+    leadRoots.set(plan, root);
+    return plan;
+  },
+  parseDiscoveryBatch(page) {
+    const data = JSON.parse(page.body) as { eventId: string; address?: unknown; actionHref?: string };
+    if (!(data.eventId === "event-a" && data.address === null) &&
+      !(["event-opaque", "event-left", "event-right"].includes(data.eventId) && typeof data.actionHref === "string")) throw new Error("Event lead facts disagree");
+    return [];
+  },
+  validateInventoryTraversalPage(page, expectedListings, planned) {
+    if (expectedListings !== 0 || planned?.request.url !== page.url) throw new Error("Event lead page identity disagrees");
+  },
+  collectPublisherEventLeadEvidence(pages, plan) {
+    const root = leadRoots.get(plan)!;
+    const event = pages[0]!;
+    const data = JSON.parse(root.body) as { eventId: string; eventIds?: string[]; renderedAddress: string; evidenceKind?: string };
+    if (data.evidenceKind === "shared") {
+      const facts = pages.map((page, index) => {
+        const eventData = JSON.parse(page.body) as { eventId: string; actionHref: string };
+        const target = new URL(eventData.actionHref);
+        if (eventData.eventId !== data.eventIds?.[index] || target.protocol !== "https:" || target.hostname === "events.fixture.test" ||
+          target.search !== "" || target.hash !== "" || target.username !== "" || target.password !== "" || target.port !== "") throw new Error("Shared event action shape disagrees");
+        return { page, eventId: eventData.eventId, targetHash: `sha256:${createHash("sha256").update(target.href).digest("hex")}` };
+      });
+      if (facts.length !== 2 || facts[0]!.targetHash !== facts[1]!.targetHash) throw new Error("Shared event target differs");
+      return facts.map((fact, index) => {
+        const peer = facts[1 - index]!;
+        return { pageKey: `event:${fact.eventId}`, evidence: {
+          kind: "shared_outbound_v1", publisherHost: "events.fixture.test", eventId: fact.eventId,
+          canonicalUrl: fact.page.url, outboundStatus: "unresolved",
+          root: { url: root.url, bodyHash: stableContentHash(root.body), fetchedAt: root.fetchedAt },
+          event: { bodyHash: stableContentHash(fact.page.body), fetchedAt: fact.page.fetchedAt, outboundTargetHash: fact.targetHash },
+          peer: { eventId: peer.eventId, canonicalUrlHash: `sha256:${createHash("sha256").update(peer.page.url).digest("hex")}` },
+        } };
+      });
+    }
+    if (data.evidenceKind === "outbound") {
+      const eventData = JSON.parse(event.body) as { eventId: string; actionHref: string };
+      const href = eventData.actionHref;
+      const target = new URL(href);
+      if (eventData.eventId !== data.eventId || target.protocol !== "https:" || target.hostname === "events.fixture.test" ||
+        target.search === "" || target.hash === "" || target.username !== "" || target.password !== "" || target.port !== "" ||
+        [...target.searchParams.keys()].some(key => /token|signature|credential|password|key/iu.test(key))) throw new Error("Opaque event action shape disagrees");
+      return [{ pageKey: `event:${data.eventId}`, evidence: {
+        kind: "unresolved_outbound_v1", publisherHost: "events.fixture.test", eventId: data.eventId,
+        canonicalUrl: event.url, outboundStatus: "unresolved",
+        root: { url: root.url, bodyHash: stableContentHash(root.body), fetchedAt: root.fetchedAt },
+        event: { bodyHash: stableContentHash(event.body), fetchedAt: event.fetchedAt, outbound: {
+          hrefHash: `sha256:${createHash("sha256").update(href).digest("hex")}`,
+          https: true, externalToPublisher: true, queryPresent: true, fragmentPresent: true,
+          credentialsPresent: false, portPresent: false, signedQueryKeyPresent: false,
+        } },
+      } }];
+    }
+    return [{ pageKey: "event:event-a", evidence: {
+      kind: "unresolved_address_v1", publisherHost: "events.fixture.test", eventId: "event-a",
+      canonicalUrl: event.url, addressStatus: "unresolved",
+      root: { url: root.url, bodyHash: stableContentHash(root.body), fetchedAt: root.fetchedAt,
+        inlineAddress: null, renderedAddressText: data.renderedAddress },
+      event: { bodyHash: stableContentHash(event.body), fetchedAt: event.fetchedAt,
+        inlineAddress: null, renderedAddressText: null },
+    } }];
+  },
+};
+export default [json, html, browser, lead].map((adapter) => ({ adapter, enabled: true })) satisfies readonly SourceRegistration[];

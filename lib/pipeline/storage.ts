@@ -24,10 +24,12 @@ import { readActiveRouteScope } from "../routing/active-scope";
 import type { GeographicPrefilterErrorCode } from "../routing/geographic-prefilter";
 import type {
   SourceInventoryCardinality,
+  SourceInventoryPublisherLeadEvidenceInput,
   SourceListingFactCompatibility,
   SourceManifest,
   SourceId,
 } from "../sources/types";
+import { normalizePublisherLeadEvidenceEntries } from "../sources/publisher-lead-evidence";
 import {
   SOURCE_IMAGE_UNAVAILABLE_EVIDENCE_CACHE_KEY,
 } from "../images/queue-reuse";
@@ -728,6 +730,8 @@ export interface SourceInventoryTraversalPublicationInput {
    * at or before this instant cannot enter the published current snapshot.
    */
   eligibilityAt?: string;
+  /** Separate facts for completed unresolved zero-row event audit pages. */
+  publisherLeadEvidence?: readonly SourceInventoryPublisherLeadEvidenceInput[];
 }
 export class SourceInventoryTraversalNotReadyError extends Error {
   constructor(message: string) {
@@ -3439,6 +3443,21 @@ async function prepareSourceInventoryTraversalPublication(
       `source inventory traversal ${traversalId} still has ${state.incompletePages} incomplete pages`,
     );
   }
+  const publisherLeadEvidence = normalizePublisherLeadEvidenceEntries(input.publisherLeadEvidence);
+  for (const entry of publisherLeadEvidence) {
+    const page = await env.DB.prepare(`
+      SELECT completed_at, observed_count, inventory_member, review_candidate
+      FROM source_inventory_traversal_pages
+      WHERE traversal_id = ? AND page_key = ?
+    `).bind(traversalId, entry.pageKey).first<{
+      completed_at: string | null; observed_count: number | null;
+      inventory_member: number; review_candidate: number;
+    }>();
+    if (!page?.completed_at || page.observed_count !== 0 || page.inventory_member !== 0 || page.review_candidate !== 0) {
+      throw new TypeError("Publisher lead evidence requires one completed zero-row audit page");
+    }
+  }
+  const publisherLeadEvidenceJson = JSON.stringify(publisherLeadEvidence);
   const evidence = await env.DB.prepare(`
     SELECT
       count(*) AS catalog_count,
@@ -3564,6 +3583,7 @@ async function prepareSourceInventoryTraversalPublication(
       catalogCount,
       candidateCount,
       collectionCountsJson: "[]",
+      publisherLeadEvidenceJson,
     },
     membershipInput: {
       sourceId,
@@ -3649,9 +3669,9 @@ async function prepareSourceInventoryTraversalPublication(
     env.DB.prepare(`
       INSERT INTO source_inventory_publications (
         source_id, inventory_run_id, listing_count,
-        collection_counts_json, published_at
+        collection_counts_json, publisher_lead_evidence_json, published_at
       )
-      SELECT ?, ?, count(*), ?,
+      SELECT ?, ?, count(*), ?, ?,
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       FROM source_current_listings
       WHERE source_id = ? AND inventory_run_id = ?
@@ -3660,6 +3680,7 @@ async function prepareSourceInventoryTraversalPublication(
       sourceId,
       runId,
       "[]",
+      publisherLeadEvidenceJson,
       sourceId,
       runId,
     ),
@@ -3826,6 +3847,7 @@ export async function abandonSourceInventoryTraversal(
 export async function replaceSourceCurrentInventory(input: {
   runId: string;
   sourceId: string;
+  publisherLeadEvidence?: readonly SourceInventoryPublisherLeadEvidenceInput[];
 }): Promise<CommittedSourcePublicationTransition> {
   const sourceId = validatedTraversalKey(
     input.sourceId,
@@ -3837,6 +3859,9 @@ export async function replaceSourceCurrentInventory(input: {
   );
   const preserveUnobservedCurrentListings =
     getConfig().preserveUnobservedCurrentListings;
+  const publisherLeadEvidenceJson = JSON.stringify(
+    normalizePublisherLeadEvidenceEntries(input.publisherLeadEvidence),
+  );
   const observedMembershipEvidence = await env.DB.prepare(`
     SELECT observation.listing_id, observation.observed_at
     FROM source_inventory_observations observation
@@ -3867,6 +3892,7 @@ export async function replaceSourceCurrentInventory(input: {
       runId,
       coverageMode: "complete_current",
       collectionCountsJson: "[]",
+      publisherLeadEvidenceJson,
       preserveUnobservedCurrentListings,
       observedCount: observedMembershipEvidence.results?.length ?? 0,
     },
@@ -3927,14 +3953,14 @@ export async function replaceSourceCurrentInventory(input: {
     `).bind(input.runId, input.sourceId),
     env.DB.prepare(`
       INSERT INTO source_inventory_publications (
-        source_id, inventory_run_id, listing_count, published_at
+        source_id, inventory_run_id, listing_count, publisher_lead_evidence_json, published_at
       )
-      SELECT ?, ?, count(*),
+      SELECT ?, ?, count(*), ?,
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       FROM source_current_listings
       WHERE source_id = ? AND inventory_run_id = ?
       ON CONFLICT(source_id, inventory_run_id) DO NOTHING
-    `).bind(input.sourceId, input.runId, input.sourceId, input.runId),
+    `).bind(input.sourceId, input.runId, publisherLeadEvidenceJson, input.sourceId, input.runId),
     env.DB.prepare(`
       INSERT INTO source_inventory_publication_heads (
         source_id, inventory_run_id, updated_at

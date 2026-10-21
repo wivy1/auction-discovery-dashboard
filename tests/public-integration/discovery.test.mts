@@ -3,6 +3,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { register } from "node:module";
 import test from "node:test";
 import { chromium } from "playwright";
+import { createHash } from "node:crypto";
 import { ensureDatabase } from "../../db/bootstrap.ts";
 
 process.env.ORIGIN_POSTAL_CODE = "90210";
@@ -134,6 +135,140 @@ test("HTML malformed and ambiguous empty inventory preserve publication; explici
     assert.equal((await storage.readSourceInventoryPublicationHead("fixture_html"))?.listingCount, 0);
     assert.equal(db.prepare("SELECT count(*) AS n FROM listing_stubs").get()?.n, 1);
     assert.equal(db.prepare("SELECT count(*) AS n FROM listing_details").get()?.n, 1);
+  } finally { clean(db); }
+});
+
+test("configured zero-row event lead retains separate source facts atomically without creating listing work", async () => {
+  const { db, objects } = await database();
+  const calls: string[] = [];
+  let address: string | null = null;
+  globalThis.fetch = async input => {
+    const url = String(input instanceof Request ? input.url : input);
+    calls.push(url);
+    if (url === "https://events.fixture.test/current") {
+      return Response.json({ eventId: "event-a", address: null, renderedAddress: "Example City, XY" });
+    }
+    if (url === "https://events.fixture.test/events/event-a") return Response.json({ eventId: "event-a", address });
+    throw new Error(`Unexpected fixture request ${url}`);
+  };
+  try {
+    const result = await runAuctionDiscovery("manual", { sourceId: "fixture_event_lead", catalogOnly: true });
+    assert.equal(result.status, "completed", summaryMessage(result));
+    assert.deepEqual(result.publishedSourceIds, ["fixture_event_lead"]);
+    assert.equal(result.discovered, 0);
+    const publication = db.prepare("SELECT publisher_lead_evidence_json FROM source_inventory_publications WHERE source_id=? AND inventory_run_id=?")
+      .get("fixture_event_lead", result.runId)!;
+    const retained = JSON.parse(String(publication.publisher_lead_evidence_json));
+    assert.equal(retained.length, 1);
+    assert.equal(retained[0].pageKey, "event:event-a");
+    assert.equal(retained[0].evidence.root.inlineAddress, null);
+    assert.equal(retained[0].evidence.root.renderedAddressText, "Example City, XY");
+    assert.equal(retained[0].evidence.event.inlineAddress, null);
+    assert.equal(retained[0].evidence.event.renderedAddressText, null);
+    assert.match(retained[0].evidence.root.bodyHash, /^fnv1a64:[a-f0-9]{16}$/);
+    assert.match(retained[0].evidence.event.bodyHash, /^fnv1a64:[a-f0-9]{16}$/);
+    for (const table of ["listing_stubs", "listing_details", "source_current_listings", "listing_routes", "listing_images", "listing_scores"]) {
+      assert.equal(db.prepare(`SELECT count(*) AS n FROM ${table}`).get()!.n, 0, table);
+    }
+    assert.equal(objects.size, 0);
+    assert.deepEqual(calls, ["https://events.fixture.test/current", "https://events.fixture.test/events/event-a"]);
+    const head = await storage.readSourceInventoryPublicationHead("fixture_event_lead");
+    address = "Contradictory later event address";
+    const failed = await runAuctionDiscovery("manual", { sourceId: "fixture_event_lead", catalogOnly: true });
+    assert.equal(failed.status, "partial");
+    assert.deepEqual(failed.publishedSourceIds, []);
+    assert.deepEqual(await storage.readSourceInventoryPublicationHead("fixture_event_lead"), head);
+    assert.deepEqual(db.prepare("SELECT publisher_lead_evidence_json FROM source_inventory_publications WHERE source_id=?").all("fixture_event_lead"), [publication]);
+  } finally { clean(db); }
+});
+
+test("configured opaque outbound lead retains only its hash and shape without requesting the action", async () => {
+  const { db, objects } = await database();
+  const calls: string[] = [];
+  let href = "https://external.fixture.test/catalog?auction=example#lots";
+  globalThis.fetch = async input => {
+    const url = String(input instanceof Request ? input.url : input);
+    calls.push(url);
+    if (url === "https://events.fixture.test/current") return Response.json({ eventId: "event-opaque", evidenceKind: "outbound" });
+    if (url === "https://events.fixture.test/events/event-opaque") return Response.json({ eventId: "event-opaque", actionHref: href });
+    throw new Error("The opaque outbound action must never be requested");
+  };
+  try {
+    const result = await runAuctionDiscovery("manual", { sourceId: "fixture_event_lead", catalogOnly: true });
+    assert.equal(result.status, "completed", summaryMessage(result));
+    assert.equal(result.discovered, 0);
+    const publication = db.prepare("SELECT publisher_lead_evidence_json FROM source_inventory_publications WHERE source_id=? AND inventory_run_id=?")
+      .get("fixture_event_lead", result.runId)!;
+    const retained = JSON.parse(String(publication.publisher_lead_evidence_json));
+    assert.equal(retained.length, 1);
+    assert.deepEqual(retained[0].evidence.event.outbound, {
+      hrefHash: `sha256:${createHash("sha256").update(href).digest("hex")}`,
+      https: true, externalToPublisher: true, queryPresent: true, fragmentPresent: true,
+      credentialsPresent: false, portPresent: false, signedQueryKeyPresent: false,
+    });
+    assert.equal(retained[0].evidence.kind, "unresolved_outbound_v1");
+    assert.equal(String(publication.publisher_lead_evidence_json).includes("external.fixture.test"), false);
+    assert.equal(String(publication.publisher_lead_evidence_json).includes(href), false);
+    for (const table of ["listing_stubs", "listing_details", "source_current_listings", "listing_routes", "listing_images", "listing_scores"]) {
+      assert.equal(db.prepare(`SELECT count(*) AS n FROM ${table}`).get()!.n, 0, table);
+    }
+    assert.equal(objects.size, 0);
+    assert.deepEqual(calls, ["https://events.fixture.test/current", "https://events.fixture.test/events/event-opaque"]);
+    const head = await storage.readSourceInventoryPublicationHead("fixture_event_lead");
+    href = "https://external.fixture.test/catalog?token=not-permitted#lots";
+    const stopped = await runAuctionDiscovery("manual", { sourceId: "fixture_event_lead", catalogOnly: true });
+    assert.equal(stopped.status, "partial");
+    assert.deepEqual(stopped.publishedSourceIds, []);
+    assert.deepEqual(await storage.readSourceInventoryPublicationHead("fixture_event_lead"), head);
+    assert.deepEqual(db.prepare("SELECT publisher_lead_evidence_json FROM source_inventory_publications WHERE source_id=?").all("fixture_event_lead"), [publication]);
+    assert.equal(calls.some(url => url.startsWith("https://external.fixture.test")), false);
+  } finally { clean(db); }
+});
+
+test("configured shared outbound leads retain a reciprocal zero-row pair without following their target", async () => {
+  const { db, objects } = await database();
+  const calls: string[] = [];
+  const target = "https://external.fixture.test/catalog/shared";
+  let rightTarget = "https://EXTERNAL.fixture.test/catalog/shared";
+  globalThis.fetch = async input => {
+    const url = String(input instanceof Request ? input.url : input);
+    calls.push(url);
+    if (url === "https://events.fixture.test/current") return Response.json({ evidenceKind: "shared", eventIds: ["event-left", "event-right"] });
+    if (url === "https://events.fixture.test/events/event-left") return Response.json({ eventId: "event-left", actionHref: target });
+    if (url === "https://events.fixture.test/events/event-right") return Response.json({ eventId: "event-right", actionHref: rightTarget });
+    throw new Error("The shared outbound target must never be requested");
+  };
+  try {
+    const result = await runAuctionDiscovery("manual", { sourceId: "fixture_event_lead", catalogOnly: true });
+    assert.equal(result.status, "completed", summaryMessage(result));
+    assert.equal(result.discovered, 0);
+    const publication = db.prepare("SELECT publisher_lead_evidence_json FROM source_inventory_publications WHERE source_id=? AND inventory_run_id=?")
+      .get("fixture_event_lead", result.runId)!;
+    const retained = JSON.parse(String(publication.publisher_lead_evidence_json));
+    assert.equal(retained.length, 2);
+    const hash = (value: string) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
+    for (const [index, row] of retained.entries()) {
+      const peer = retained[1 - index];
+      assert.equal(row.evidence.kind, "shared_outbound_v1");
+      assert.equal(row.evidence.event.outboundTargetHash, hash(target));
+      assert.equal(row.evidence.peer.eventId, peer.evidence.eventId);
+      assert.equal(row.evidence.peer.canonicalUrlHash, hash(peer.evidence.canonicalUrl));
+      assert.deepEqual(row.evidence.root, peer.evidence.root);
+    }
+    assert.equal(String(publication.publisher_lead_evidence_json).includes("external.fixture.test"), false);
+    for (const table of ["listing_stubs", "listing_details", "source_current_listings", "listing_routes", "listing_images", "listing_scores"]) {
+      assert.equal(db.prepare(`SELECT count(*) AS n FROM ${table}`).get()!.n, 0, table);
+    }
+    assert.equal(objects.size, 0);
+    assert.deepEqual(calls, ["https://events.fixture.test/current", "https://events.fixture.test/events/event-left", "https://events.fixture.test/events/event-right"]);
+    const head = await storage.readSourceInventoryPublicationHead("fixture_event_lead");
+    rightTarget = "https://external.fixture.test/catalog/different";
+    const stopped = await runAuctionDiscovery("manual", { sourceId: "fixture_event_lead", catalogOnly: true });
+    assert.equal(stopped.status, "partial");
+    assert.deepEqual(stopped.publishedSourceIds, []);
+    assert.deepEqual(await storage.readSourceInventoryPublicationHead("fixture_event_lead"), head);
+    assert.deepEqual(db.prepare("SELECT publisher_lead_evidence_json FROM source_inventory_publications WHERE source_id=?").all("fixture_event_lead"), [publication]);
+    assert.equal(calls.some(url => /external\.fixture\.test/iu.test(url)), false);
   } finally { clean(db); }
 });
 

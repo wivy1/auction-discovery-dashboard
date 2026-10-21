@@ -1,6 +1,7 @@
 import { LISTING_END_OVERRIDES_TABLE_SQL } from "./listing-end-state-v46-sql.ts";
+import { PUBLISHER_LEAD_EVIDENCE_CONFLICT_GUARD_SQL } from "./publisher-lead-evidence-v47-sql.ts";
 /** Fresh public schema. Future changes must migrate this public version. */
-export const DATABASE_SCHEMA_VERSION = 46;
+export const DATABASE_SCHEMA_VERSION = 47;
 export const CREATE_SCHEMA_METADATA_SQL = `
   CREATE TABLE IF NOT EXISTS _auction_discovery_public_schema (
     singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
@@ -471,7 +472,12 @@ export const PUBLIC_SCHEMA_STATEMENTS: readonly string[] = [
       source_id TEXT NOT NULL REFERENCES auction_sources(id),
       inventory_run_id TEXT NOT NULL REFERENCES discovery_runs(id),
       listing_count INTEGER NOT NULL,
-      published_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), collection_counts_json TEXT NOT NULL DEFAULT '[]'
+      published_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), publisher_lead_evidence_json TEXT NOT NULL DEFAULT '[]'
+      CONSTRAINT source_inventory_publications_publisher_lead_evidence_check CHECK (
+        json_valid(publisher_lead_evidence_json)
+        AND json_type(publisher_lead_evidence_json) = 'array'
+        AND json_array_length(publisher_lead_evidence_json) <= 20
+      ), collection_counts_json TEXT NOT NULL DEFAULT '[]'
       CHECK (
         json_valid(collection_counts_json)
         AND json_type(collection_counts_json) = 'array'
@@ -3626,20 +3632,7 @@ export const PUBLIC_SCHEMA_STATEMENTS: readonly string[] = [
         'listing action deadlines are immutable first-observed records'
       );
     END`,
-  `CREATE TRIGGER IF NOT EXISTS source_inventory_publications_conflict_guard
-    BEFORE INSERT ON source_inventory_publications
-    WHEN EXISTS (
-      SELECT 1 FROM source_inventory_publications existing
-      WHERE existing.source_id = NEW.source_id
-        AND existing.inventory_run_id = NEW.inventory_run_id
-        AND (
-          existing.listing_count <> NEW.listing_count
-          OR existing.collection_counts_json <> NEW.collection_counts_json
-        )
-    )
-    BEGIN
-      SELECT RAISE(ABORT, 'source inventory publication proof conflicts with immutable evidence');
-    END`,
+  PUBLISHER_LEAD_EVIDENCE_CONFLICT_GUARD_SQL,
   `CREATE TRIGGER IF NOT EXISTS preference_model_activation_chain_guard
     BEFORE INSERT ON preference_model_activation_events
     WHEN
@@ -4974,7 +4967,7 @@ export const PUBLIC_SCHEMA_STATEMENTS: readonly string[] = [
     LEFT JOIN preference_prospective_promotion_authorizations_v2 authorization
       ON authorization.receipt_id = receipt.receipt_id`,
   LISTING_END_OVERRIDES_TABLE_SQL,
-  `INSERT INTO _auction_discovery_public_schema (singleton, version, applied_at) VALUES (1, 46, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) ON CONFLICT(singleton) DO UPDATE SET version=excluded.version, applied_at=excluded.applied_at`
+  `INSERT INTO _auction_discovery_public_schema (singleton, version, applied_at) VALUES (1, 47, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) ON CONFLICT(singleton) DO UPDATE SET version=excluded.version, applied_at=excluded.applied_at`
 ];
 
 

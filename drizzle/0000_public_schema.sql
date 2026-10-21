@@ -493,7 +493,12 @@ CREATE TABLE IF NOT EXISTS source_inventory_publications (
       source_id TEXT NOT NULL REFERENCES auction_sources(id),
       inventory_run_id TEXT NOT NULL REFERENCES discovery_runs(id),
       listing_count INTEGER NOT NULL,
-      published_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), collection_counts_json TEXT NOT NULL DEFAULT '[]'
+      published_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), publisher_lead_evidence_json TEXT NOT NULL DEFAULT '[]'
+      CONSTRAINT source_inventory_publications_publisher_lead_evidence_check CHECK (
+        json_valid(publisher_lead_evidence_json)
+        AND json_type(publisher_lead_evidence_json) = 'array'
+        AND json_array_length(publisher_lead_evidence_json) <= 20
+      ), collection_counts_json TEXT NOT NULL DEFAULT '[]'
       CHECK (
         json_valid(collection_counts_json)
         AND json_type(collection_counts_json) = 'array'
@@ -3830,6 +3835,7 @@ CREATE TRIGGER IF NOT EXISTS source_inventory_publications_conflict_guard
         AND (
           existing.listing_count <> NEW.listing_count
           OR existing.collection_counts_json <> NEW.collection_counts_json
+          OR existing.publisher_lead_evidence_json <> NEW.publisher_lead_evidence_json
         )
     )
     BEGIN
@@ -5325,4 +5331,4 @@ CREATE TABLE IF NOT EXISTS listing_end_overrides (
   CONSTRAINT listing_end_overrides_source_check CHECK (source = 'operator_dashboard')
 );
 
-INSERT INTO _auction_discovery_public_schema (singleton, version, applied_at) VALUES (1, 46, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) ON CONFLICT(singleton) DO UPDATE SET version=excluded.version, applied_at=excluded.applied_at;
+INSERT INTO _auction_discovery_public_schema (singleton, version, applied_at) VALUES (1, 47, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) ON CONFLICT(singleton) DO UPDATE SET version=excluded.version, applied_at=excluded.applied_at;

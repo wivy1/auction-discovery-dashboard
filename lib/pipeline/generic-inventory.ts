@@ -1,7 +1,13 @@
-import type { SourceAdapter, SourceDiscoveredListing, SourceDiscoveryContext, SourcePage, SourceRequestController } from "../sources";
+import type { SourceAdapter, SourceDiscoveredListing, SourceDiscoveryContext, SourceInventoryPublisherLeadEvidenceInput, SourcePage, SourceRequestController } from "../sources";
 import { SourceAdapterError } from "../sources/types";
 import { invokeSourceParser } from "../sources/parser-errors";
 import { createSourceParserEvidenceCapture } from "./source-repair-evidence";
+import { bindPublisherLeadEvidence } from "../sources/publisher-lead-evidence";
+
+export interface GenericInventoryCollection {
+  readonly listings: readonly SourceDiscoveredListing[];
+  readonly publisherLeadEvidence: readonly SourceInventoryPublisherLeadEvidenceInput[];
+}
 
 /** Parse and validate the complete bounded inventory before publishing any membership. */
 export async function collectGenericInventory(
@@ -10,7 +16,7 @@ export async function collectGenericInventory(
   context: SourceDiscoveryContext,
   checkpoint: () => Promise<void>,
   parserEvidence = createSourceParserEvidenceCapture(adapter.manifest.id),
-): Promise<readonly SourceDiscoveredListing[]> {
+): Promise<GenericInventoryCollection> {
   const requests = adapter.planDiscovery(context);
   if (requests.length === 0) throw new SourceAdapterError(adapter.manifest.id, "The inventory plan has no authoritative document");
   const roots: SourcePage[] = [];
@@ -24,6 +30,7 @@ export async function collectGenericInventory(
     ? parserEvidence.run({ page: roots[0]!, operation: "plan_inventory" }, () => adapter.planInventoryTraversal?.(roots[0]!))
     : null);
   const pages: SourcePage[] = [];
+  const pageRowCounts = new Map<string, number>();
   const listings: SourceDiscoveredListing[] = [];
   const append = (page: SourcePage, planned?: NonNullable<typeof traversal>["pages"][number]) => {
     const rows = parserEvidence.run({ page, operation: "parse_page",
@@ -34,6 +41,7 @@ export async function collectGenericInventory(
     if (planned && (rows.length < planned.minimumListings || rows.length > planned.maximumListings)) {
       throw new SourceAdapterError(adapter.manifest.id, "Inventory page count differs from its declared bounds");
     }
+    if (planned) pageRowCounts.set(planned.key, rows.length);
     if (!planned || planned.inventoryMember) listings.push(...rows);
     pages.push(page);
   };
@@ -76,5 +84,15 @@ export async function collectGenericInventory(
     throw new SourceAdapterError(adapter.manifest.id, "The complete inventory count differs from its declared total");
   }
   controller.assertComplete?.();
-  return [...unique.values()];
+  const publisherLeadEvidence = traversal
+    ? invokeSourceParser(adapter.manifest.id, () => bindPublisherLeadEvidence({
+        entries: [
+          ...traversal.pages.flatMap(page => page.publisherEventLeadEvidence
+            ? [{ pageKey: page.key, evidence: page.publisherEventLeadEvidence }] : []),
+          ...(adapter.collectPublisherEventLeadEvidence?.(pages, traversal) ?? []),
+        ],
+        plannedPages: traversal.pages, pages, roots, pageRowCounts,
+      }))
+    : [];
+  return { listings: [...unique.values()], publisherLeadEvidence };
 }

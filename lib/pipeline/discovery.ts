@@ -154,7 +154,8 @@ export async function runAuctionDiscovery(
         }
         let work: readonly SourceDiscoveredListing[] = [];
         if (mode !== "continuation") {
-          work = await collectGenericInventory(adapter, controller, { canary: mode === "canary", originPostalCode: origin.postalCode }, checkpoint, parserEvidence);
+          const inventory = await collectGenericInventory(adapter, controller, { canary: mode === "canary", originPostalCode: origin.postalCode }, checkpoint, parserEvidence);
+          work = inventory.listings;
           const ensured = await ensureListingStubs(runId, work.map(({ stub }) => stub));
           counters.stubsDiscovered = work.length;
           summary.discovered += work.length;
@@ -180,7 +181,7 @@ export async function runAuctionDiscovery(
             }
           }
           if (mode === "normal") {
-            transitions.push(await replaceSourceCurrentInventory({ runId, sourceId: manifest.id }));
+            transitions.push(await replaceSourceCurrentInventory({ runId, sourceId: manifest.id, publisherLeadEvidence: inventory.publisherLeadEvidence }));
             published.push(manifest.id);
           }
           await recordSourceDocumentAccessRecovery({ database: env.DB, manifest });

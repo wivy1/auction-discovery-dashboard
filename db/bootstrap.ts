@@ -1,4 +1,5 @@
 import { SCHEMA_V46_MIGRATION_STATEMENTS } from "./listing-end-state-v46-sql.ts";
+import { SCHEMA_V47_MIGRATION_STATEMENTS } from "./publisher-lead-evidence-v47-sql.ts";
 import {
   CREATE_SCHEMA_METADATA_SQL,
   DATABASE_SCHEMA_VERSION,
@@ -113,7 +114,7 @@ async function bootstrapDatabase(
 
   if (
     !Number.isInteger(currentVersion) ||
-    (currentVersion !== 0 && currentVersion !== 45)
+    (currentVersion !== 0 && currentVersion !== 45 && currentVersion !== 46)
   ) {
     throw new Error(
       `Unsupported auction-discovery database schema version ${currentVersion}; this build supports version ${DATABASE_SCHEMA_VERSION}.`,
@@ -121,8 +122,8 @@ async function bootstrapDatabase(
   }
 
   const migrationSql = currentVersion === 45
-    ? SCHEMA_V46_MIGRATION_STATEMENTS
-    : PUBLIC_SCHEMA_STATEMENTS;
+    ? [...SCHEMA_V46_MIGRATION_STATEMENTS, ...SCHEMA_V47_MIGRATION_STATEMENTS]
+    : currentVersion === 46 ? SCHEMA_V47_MIGRATION_STATEMENTS : PUBLIC_SCHEMA_STATEMENTS;
   const statements = migrationSql.map((sql) => database.prepare(sql));
   await database.batch(statements);
 
